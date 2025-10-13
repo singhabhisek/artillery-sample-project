@@ -2,28 +2,28 @@
 # 🧪 GitHub Actions Workflow: Artillery Load/Stress Test Runner
 # =====================================================================
 # 💡 Purpose:
-#    Automates running Artillery performance tests in GitHub Actions.
-#    Supports environment selection (beta/gamma), test types (load/stress/cleanup),
-#    report generation, artifact upload, and cleanup of old test results.
+#    Automates Artillery performance tests inside GitHub Actions.
+#    Supports selectable environments (beta/gamma) & auto-pulls
+#    BASE_URL, API_KEY, and AUTH_HEADER from GitHub Environment Secrets.
 # =====================================================================
 
-name: 🧨 Run Artillery Tests  # Workflow name shown in GitHub Actions UI
+name: 🧨 Run Artillery Tests
 
 # ---------------------------------------------------------------------
-# Trigger section: "workflow_dispatch" enables manual runs from GitHub UI
+# Manual trigger allows running this workflow from GitHub Actions UI
 # ---------------------------------------------------------------------
 on:
   workflow_dispatch:
-    inputs:  # Custom user inputs shown when manually running the workflow
+    inputs:
       environment:
-        description: "Choose target environment"  # beta or gamma backend URL
+        description: "Choose target environment (beta or gamma)"
         required: true
         type: choice
         options:
           - beta
           - gamma
       test_type:
-        description: "Choose the test type"  # Select which mode to run
+        description: "Choose test type (load, stress, cleanup)"
         required: true
         type: choice
         options:
@@ -31,150 +31,115 @@ on:
           - stress
           - cleanup
       script_file:
-        description: "Enter YAML filename from 'scripts/' folder (e.g., login-test.yml)"
+        description: "YAML file from 'scripts/' folder (e.g. login-test.yml)"
         required: false
         default: "login-test.yml"
       test_name:
-        description: "Optional: Provide a custom name for this test run"
+        description: "Optional custom name for test run"
         required: false
       cleanup_days:
-        description: "Optional: Delete reports older than this many days"
+        description: "Delete reports older than X days (for cleanup mode)"
         required: false
         default: "7"
 
 # ---------------------------------------------------------------------
-# Environment variables — globally available for all steps
+# Default environment variables (applies to all jobs)
 # ---------------------------------------------------------------------
 env:
-  ARTILLERY_VERSION: "2.0.21"    # Artillery CLI version to install
-  SCRIPTS_DIR: "./scripts"       # Directory containing Artillery YAML test scripts
-  DATA_DIR: "./data"             # Directory containing CSV or test data files
-  REPORT_DIR: "./artillery-results"  # Directory where reports and logs will be saved
+  ARTILLERY_VERSION: "2.0.21"
+  SCRIPTS_DIR: "./scripts"
+  DATA_DIR: "./data"
+  REPORT_DIR: "./artillery-results"
 
 # ---------------------------------------------------------------------
-# JOBS section — defines what to run and on what system
+# Main job definition
 # ---------------------------------------------------------------------
 jobs:
   run-artillery:
-    runs-on: ubuntu-latest  # Uses GitHub-hosted Ubuntu VM to execute steps
+    runs-on: ubuntu-latest
+
+    # 🔐 This ties the job to the selected GitHub Environment.
+    # GitHub automatically injects environment vars & secrets.
+    environment: ${{ github.event.inputs.environment }}
 
     steps:
       # ---------------------------------------------------------------
-      # 1️⃣ Checkout code from the repository
-      # ---------------------------------------------------------------
-      - name: 📥 Checkout repository
-        uses: actions/checkout@v4  # Downloads your repo so tests can run on it
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
 
-      # ---------------------------------------------------------------
-      # 2️⃣ Setup Node.js (required by Artillery)
       # ---------------------------------------------------------------
       - name: ⚙️ Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "18"  # Artillery supports Node.js 16+ (18 is stable LTS)
+          node-version: "18"
 
-      # ---------------------------------------------------------------
-      # 3️⃣ Install Artillery CLI globally
       # ---------------------------------------------------------------
       - name: 📦 Install Artillery CLI
-        run: |
-          # Installs a fixed version of Artillery (to avoid breaking changes)
-          npm install -g artillery@${{ env.ARTILLERY_VERSION }}
+        run: npm install -g artillery@${{ env.ARTILLERY_VERSION }}
 
-      # ---------------------------------------------------------------
-      # 4️⃣ Determine base URL depending on chosen environment
-      # ---------------------------------------------------------------
-      - name: 🌐 Determine target URL
-        id: env_url
-        run: |
-          # Use the GitHub "vars" feature (in repo settings) to store URLs securely
-          # Choose correct backend base URL depending on selected environment
-          if [ "${{ github.event.inputs.environment }}" = "beta" ]; then
-            echo "base_url=${{ vars.BETA_URL }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.inputs.environment }}" = "gamma" ]; then
-            echo "base_url=${{ vars.GAMMA_URL }}" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Invalid environment selected"; exit 1;
-          fi
-
-      # ---------------------------------------------------------------
-      # 5️⃣ Handle cleanup — delete old reports if cleanup is selected
-      # ---------------------------------------------------------------
-      - name: 🧹 Cleanup old artifacts
-        if: ${{ github.event.inputs.test_type == 'cleanup' }}
-        run: |
-          echo "🧺 Cleaning up reports older than ${{ github.event.inputs.cleanup_days }} days..."
-          # Finds and deletes JSON/HTML/ZIP older than X days
-          find "${{ env.REPORT_DIR }}" -type f -mtime +${{ github.event.inputs.cleanup_days }} -print -delete || true
-          echo "✅ Cleanup completed."
-        shell: bash
-
-      # ---------------------------------------------------------------
-      # 6️⃣ Skip test execution if cleanup mode was chosen
-      # ---------------------------------------------------------------
-      - name: 💤 Skip execution for cleanup
-        if: ${{ github.event.inputs.test_type == 'cleanup' }}
-        run: echo "Cleanup done. Skipping Artillery execution."
-        shell: bash
-
-      # ---------------------------------------------------------------
-      # 7️⃣ Define test name — either user-provided or generated automatically
       # ---------------------------------------------------------------
       - name: 🏷️ Define Test Name
         id: set_name
         run: |
-          DATE=$(date +'%d%m%y')  # Generate short date stamp like 131025
+          DATE=$(date +'%d%m%y')
           if [ -n "${{ github.event.inputs.test_name }}" ]; then
-            NAME="${{ github.event.inputs.test_name }}"  # Use custom name if provided
+            NAME="${{ github.event.inputs.test_name }}"
           else
             BASE=$(basename "${{ github.event.inputs.script_file }}" .yml)
-            NAME="test-${BASE}-${DATE}"  # e.g. test-login-test-131025
+            NAME="test-${BASE}-${DATE}"
           fi
           echo "test_name=$NAME" >> $GITHUB_OUTPUT
-          echo "✅ Using test name: $NAME"
+          echo "✅ Test Name: $NAME"
 
       # ---------------------------------------------------------------
-      # 8️⃣ Execute Artillery test (for load/stress runs only)
+      - name: 🧹 Cleanup Old Reports
+        if: ${{ github.event.inputs.test_type == 'cleanup' }}
+        run: |
+          echo "🧺 Deleting reports older than ${{ github.event.inputs.cleanup_days }} days..."
+          find "${{ env.REPORT_DIR }}" -type f -mtime +${{ github.event.inputs.cleanup_days }} -print -delete || true
+          echo "✅ Cleanup complete."
+
+      # ---------------------------------------------------------------
+      - name: 💤 Skip Execution in Cleanup Mode
+        if: ${{ github.event.inputs.test_type == 'cleanup' }}
+        run: echo "Cleanup done. Skipping Artillery execution."
+
       # ---------------------------------------------------------------
       - name: 🚀 Run Artillery Test
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         run: |
-          # Create results folder if not already present
           mkdir -p "${{ env.REPORT_DIR }}"
           REPORT_JSON="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.json"
           REPORT_HTML="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.html"
 
-          echo "▶️ Running Artillery test using script: ${{ github.event.inputs.script_file }}"
-          echo "🌍 Target URL: ${{ steps.env_url.outputs.base_url }}"
+          echo "▶️ Running Artillery test script: ${{ github.event.inputs.script_file }}"
+          echo "🌍 Target URL: ${{ vars.BASE_URL }}"  # Pulled from GitHub Environment Variable
 
-          # The ARTILLERY_TARGET env variable is passed into YAML config
-          ARTILLERY_TARGET="${{ steps.env_url.outputs.base_url }}" \
+          # Environment variables passed to Artillery for substitution
+          ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
+          API_KEY="${{ secrets.API_KEY }}" \
+          AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" \
             --output "$REPORT_JSON"
 
-          # Generate a human-readable HTML report from JSON output
+          # Generate HTML report
           artillery report "$REPORT_JSON" --output "$REPORT_HTML"
 
       # ---------------------------------------------------------------
-      # 9️⃣ Zip together YAML script, JSON, and HTML reports
-      # ---------------------------------------------------------------
-      - name: 📦 Package results
+      - name: 📦 Package Results
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         run: |
           ZIP_FILE="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.zip"
-          # Zip script and output files into a single downloadable artifact
           zip -j "$ZIP_FILE" \
             "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" \
             "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.json" \
             "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.html"
-          echo "✅ Packaged report as ZIP: $ZIP_FILE"
+          echo "✅ Packaged results: $ZIP_FILE"
 
       # ---------------------------------------------------------------
-      # 🔟 Upload the ZIP artifact so it's accessible from GitHub UI
-      # ---------------------------------------------------------------
-      - name: 📤 Upload Artillery Reports
+      - name: 📤 Upload Artifact
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         uses: actions/upload-artifact@v4
         with:
-          name: "${{ steps.set_name.outputs.test_name }}"  # Artifact name in Actions tab
-          path: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.zip"  # Actual ZIP path
+          name: "${{ steps.set_name.outputs.test_name }}"
+          path: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.zip"
