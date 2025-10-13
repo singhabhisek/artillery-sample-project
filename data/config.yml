@@ -1,5 +1,0 @@
-config:
-  phases:
-    - name: "Phase 1"
-      duration: 60
-      arrivalRate: 5
