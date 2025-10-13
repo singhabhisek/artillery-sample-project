@@ -1,0 +1,80 @@
+# =====================================================================
+# 🎯 Artillery Load Test for GCP Cloud Run Microservices
+# =====================================================================
+# Features:
+#  - GET /users/:id
+#  - POST /orders
+#  - Reads user/order data from CSV files
+#  - Uses environment vars & GitHub Secrets
+#  - Plugins: ensure, artillery-plugin-endpoints
+#  - Logs errors (status != 200) to reports/logs/error_log.txt
+# =====================================================================
+
+config:
+  target: "{{ $processEnvironment.ARTILLERY_TARGET }}"  # Set by GitHub workflow
+  phases:
+    - duration: 60         # Run for 60 seconds
+      arrivalRate: 3       # 3 users/sec
+      name: "Warm-up"
+    - duration: 120
+      arrivalRate: 5
+      name: "Steady Load"
+
+  processor: "./scripts/hooks.js"      # JS hooks for error logging
+  plugins:
+    ensure: {}                         # Fail fast if validation fails
+    artillery-plugin-endpoints: {}      # Adds endpoint-level reporting
+
+  ensure:
+    thresholds:
+      - http.response_time.p95 < 4000   # 95% requests < 4s
+      - http.response_time.max < 10000  # No requests >10s
+
+  defaults:
+    headers:
+      Content-Type: "application/json"
+      X-Auth-Token: "{{ $processEnvironment.API_KEY }}"  # Secret from GitHub
+
+  payload:
+    - path: "../data/users.csv"
+      fields:
+        - "userId"
+        - "firstName"
+        - "lastName"
+        - "email"
+      order: sequence        # Each virtual user gets unique row (per iteration)
+    - path: "../data/orders.csv"
+      fields:
+        - "productId"
+        - "quantity"
+        - "price"
+      order: random          # Randomly picked per request
+
+scenarios:
+  - name: "GET user profile and create order"
+    flow:
+      - get:
+          url: "/users/{{ userId }}"
+          capture:
+            - json: "$.id"
+              as: "fetchedUserId"
+
+      - post:
+          url: "/orders"
+          json:
+            userId: "{{ fetchedUserId }}"
+            productId: "{{ productId }}"
+            quantity: "{{ quantity }}"
+            price: "{{ price }}"
+          expect:
+            - statusCode: 200
+
+      - think: 2
+
+      - post:
+          url: "/payments"
+          json:
+            userId: "{{ fetchedUserId }}"
+            total: "{{ price }}"
+          expect:
+            - statusCode: 200
