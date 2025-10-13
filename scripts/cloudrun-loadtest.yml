@@ -1,64 +1,89 @@
 # =====================================================================
 # 🎯 Artillery Load Test for GCP Cloud Run Microservices
 # =====================================================================
+# Description:
+#   Runs a realistic load against Cloud Run endpoints:
+#     - GET /users/:id
+#     - POST /orders
+#     - POST /payments
 # Features:
-#  - GET /users/:id
-#  - POST /orders
-#  - Reads user/order data from CSV files
-#  - Uses environment vars & GitHub Secrets
-#  - Plugins: ensure, artillery-plugin-endpoints
-#  - Logs errors (status != 200) to reports/logs/error_log.txt
+#   - Reads user/order data from CSV files
+#   - Uses GitHub Action environment vars & secrets
+#   - Plugins: ensure, artillery-plugin-endpoints
+#   - Logs errors (status != 200) into reports/logs/error_log.txt
+#   - Can be executed automatically from GitHub Actions
 # =====================================================================
 
 config:
-  target: "{{ $processEnvironment.ARTILLERY_TARGET }}"  # Set by GitHub workflow
+  # 🌍 Target base URL — injected by GitHub Action using ARTILLERY_TARGET
+  target: "{{ $processEnvironment.ARTILLERY_TARGET }}"
+
+  # 🕒 Phases define test duration & load pattern
   phases:
-    - duration: 60         # Run for 60 seconds
-      arrivalRate: 3       # 3 users/sec
+    - duration: 60          # 1 minute warm-up phase
+      arrivalRate: 3        # 3 new virtual users per second
       name: "Warm-up"
-    - duration: 120
+    - duration: 120         # 2 minutes steady load
       arrivalRate: 5
       name: "Steady Load"
 
-  processor: "./scripts/hooks.js"      # JS hooks for error logging
-  plugins:
-    ensure: {}                         # Fail fast if validation fails
-    artillery-plugin-endpoints: {}      # Adds endpoint-level reporting
+  # ⚙️ Processor script (Node.js) for custom hooks & error handling
+  processor: "./scripts/hooks.js"
 
+  # 🔌 Plugins to extend Artillery functionality
+  plugins:
+    ensure: {}                       # Add pass/fail checks
+    artillery-plugin-endpoints: {}   # Endpoint-level metrics summary
+
+  # ✅ Ensure thresholds (test fails if these not met)
   ensure:
     thresholds:
-      - http.response_time.p95 < 4000   # 95% requests < 4s
-      - http.response_time.max < 10000  # No requests >10s
+      - http.response_time.p95 < 4000     # 95% of requests < 4s
+      - http.response_time.max < 10000    # None exceed 10s
+      - http.request_rate > 2             # At least 2 requests/sec
+      - http.codes.200.rate > 0.95        # 95% success rate required
 
+  # 🌐 Common headers for all requests
   defaults:
     headers:
       Content-Type: "application/json"
-      X-Auth-Token: "{{ $processEnvironment.API_KEY }}"  # Secret from GitHub
+      X-Auth-Token: "{{ $processEnvironment.API_KEY }}"        # from GitHub Secret
+      Authorization: "{{ $processEnvironment.AUTH_HEADER }}"   # from GitHub Secret
 
+  # 📊 CSV-based payloads for dynamic data
   payload:
+    # Each virtual user gets one unique record from users.csv
     - path: "../data/users.csv"
       fields:
         - "userId"
         - "firstName"
         - "lastName"
         - "email"
-      order: sequence        # Each virtual user gets unique row (per iteration)
+      order: sequence
+
+    # Random order data (different per request)
     - path: "../data/orders.csv"
       fields:
         - "productId"
         - "quantity"
         - "price"
-      order: random          # Randomly picked per request
+      order: random
 
+# =====================================================================
+# 💡 Scenario: Simulate a complete microservice transaction
+# =====================================================================
 scenarios:
-  - name: "GET user profile and create order"
+  - name: "GET user profile → create order → charge payment"
     flow:
+      # 🧍 Step 1: Fetch user details
       - get:
           url: "/users/{{ userId }}"
           capture:
             - json: "$.id"
               as: "fetchedUserId"
+          afterResponse: "logIfError"
 
+      # 📦 Step 2: Create an order
       - post:
           url: "/orders"
           json:
@@ -68,9 +93,12 @@ scenarios:
             price: "{{ price }}"
           expect:
             - statusCode: 200
+          afterResponse: "logIfError"
 
+      # 💭 Simulate small user think time
       - think: 2
 
+      # 💳 Step 3: Charge payment for the order
       - post:
           url: "/payments"
           json:
@@ -78,3 +106,4 @@ scenarios:
             total: "{{ price }}"
           expect:
             - statusCode: 200
+          afterResponse: "logIfError"
