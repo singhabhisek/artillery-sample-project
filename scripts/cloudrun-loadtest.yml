@@ -17,6 +17,8 @@
 config:
   # 🌍 Target base URL — injected by GitHub Action using ARTILLERY_TARGET
   target: "{{ $processEnvironment.ARTILLERY_TARGET }}"
+  echo "▶️ Running Artillery test script: ${{ github.event.inputs.script_file }}"
+  echo "🌍 Target URL: ${{ vars.BASE_URL }}"
 
   # 🕒 Phases define test duration & load pattern
   phases:
