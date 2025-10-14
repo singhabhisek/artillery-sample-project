@@ -2,17 +2,18 @@
 # 🧪 GitHub Actions Workflow: Artillery Load/Stress Test Runner
 # =====================================================================
 # 💡 Purpose:
-#    Automates Artillery performance tests inside GitHub Actions.
-#    Supports selectable environments (test/gamma) & auto-pulls
-#    BASE_URL, API_KEY, and AUTH_HEADER from GitHub Environment Secrets.
-#    Additionally runs a Python dashboard generator to produce
-#    a rich HTML analytics report.
+#   Automates Artillery performance tests inside GitHub Actions.
+#   Supports selectable environments (test/gamma) & auto-pulls
+#   BASE_URL, API_KEY, and AUTH_HEADER from GitHub Environment Secrets.
+#   Additionally runs a Python dashboard generator to produce
+#   a rich HTML analytics report.
 # =====================================================================
 
 name: 🧨 Run Artillery Tests
 
 # ---------------------------------------------------------------------
 # Manual trigger allows running this workflow from GitHub Actions UI
+# Defines the input parameters required for manual execution.
 # ---------------------------------------------------------------------
 on:
   workflow_dispatch:
@@ -43,9 +44,19 @@ on:
         description: "Delete reports older than X days (for cleanup mode)"
         required: false
         default: "7"
+      # New Input: Allows selecting the number of concurrent runners (VMs)
+      runners_to_use:
+        description: "Number of concurrent runners (VMs) for the test matrix."
+        required: true
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '4'
 
 # ---------------------------------------------------------------------
 # Default environment variables (applies to all jobs)
+# Sets common variables used throughout the workflow.
 # ---------------------------------------------------------------------
 env:
   ARTILLERY_VERSION: "2.0.26"
@@ -58,12 +69,92 @@ env:
 # ---------------------------------------------------------------------
 jobs:
   run-artillery:
+    # Specifies the type of runner machine to use (GitHub-hosted Ubuntu)
     runs-on: ubuntu-latest
 
-    # 🔐 Tie this job to the selected GitHub Environment.
+    # -----------------------------------------------------------------
+    # Strategy: Defines the matrix for running concurrent runners
+    # We define a max of 4 runners and use a conditional step to skip
+    # runners beyond the user-requested amount.
+    # -----------------------------------------------------------------
+    strategy:
+      fail-fast: false # Allows all runners to complete even if one fails
+      matrix:
+        # Define the maximum number of runners this workflow supports
+        runner_index: [1, 2, 3, 4]
+
+    # Dynamically name the job to show which runner is executing
+    name: Runner ${{ matrix.runner_index }} of ${{ github.event.inputs.runners_to_use }}
+
+    # 🔐 Tie this job to the selected GitHub Environment for secret access.
     environment: ${{ github.event.inputs.environment }}
 
     steps:
+      # ---------------------------------------------------------------
+      # 🛑 Check/Skip Matrix Runner
+      # ---------------------------------------------------------------
+      # This step checks the current matrix index against the user input.
+      # If the index is greater than the requested count (e.g., runner 3 requested 2),
+      # the step fails, immediately cancelling this specific matrix job instance.
+      - name: 🛑 Check/Skip Matrix Runner
+        if: ${{ matrix.runner_index > fromJson(github.event.inputs.runners_to_use) }}
+        run: |
+          echo "Skipping matrix runner ${{ matrix.runner_index }}. Only ${{ github.event.inputs.runners_to_use }} runners were requested."
+          # Exit with an error code to immediately fail this job instance
+          exit 1
+      
+      # ---------------------------------------------------------------
+      # ℹ️ Runner Provisioning Details (Flag Requirement)
+      # ---------------------------------------------------------------
+      # This step captures and prints the specifications of the
+      # GitHub-hosted VM (the runner) executing this workflow.
+      # This addresses the flag requirement to show VM name, capacity,
+      # public IP, and approximate location.
+      - name: ℹ️ Print Runner Provisioning Details
+        run: |
+          echo "=========================================================="
+          echo "🔥 GITHUB ACTIONS RUNNER VM DETAILS (Artillery Test Host) 🔥"
+          echo "=========================================================="
+          echo "MATRIX RUNNER INDEX: ${{ matrix.runner_index }} of ${{ github.event.inputs.runners_to_use }}"
+          echo "----------------------------------------------------------"
+
+          # 1. VM Provisioned Name/OS
+          # ${{ runner.os }} gives 'Linux' or 'Windows', uname gives kernel details
+          echo "VM/OS Provisioned: ${{ runner.os }} (${{ runner.arch }})"
+          echo "Kernel/OS Version: $(uname -sro)"
+
+          # 2. Capacity (CPU and Memory)
+          # 'nproc' reports the number of processing units available (usually 2 cores for GitHub-hosted)
+          echo "----------------------------------------------------------"
+          echo "Capacity:"
+          echo "  CPU Cores: $(nproc) (Reported by OS)"
+
+          # Calculate total memory (MemTotal is in kB, convert to GB using 'bc')
+          MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+          MEM_GB=$(printf "%.2f" $(echo "$MEM_KB / 1024 / 1024" | bc -l))
+          echo "  Total Memory: ${MEM_GB} GB (Reported by OS)"
+
+          # 3 & 4. Public IP and Location (Requires external service)
+          echo "----------------------------------------------------------"
+          echo "Network Details (Public IP & Location):"
+
+          # Get the public IP address of the runner
+          PUBLIC_IP=$(curl -s api.ipify.org)
+          echo "  Public IP Used: $PUBLIC_IP"
+
+          # Use a geo-IP service (ip-api.com) and jq to get approximate location
+          # This location is where GitHub runs the test.
+          LOCATION_INFO=$(curl -s http://ip-api.com/json/$PUBLIC_IP)
+          CITY=$(echo "$LOCATION_INFO" | jq -r '.city')
+          REGION=$(echo "$LOCATION_INFO" | jq -r '.regionName')
+          COUNTRY=$(echo "$LOCATION_INFO" | jq -r '.country')
+
+          echo "  Approximate Location: $CITY, $REGION, $COUNTRY"
+          echo "=========================================================="
+        env:
+          # Explicitly set shell for reliable command execution
+          SHELL: /bin/bash
+
       # ---------------------------------------------------------------
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
@@ -76,30 +167,42 @@ jobs:
 
       # ---------------------------------------------------------------
       - name: 📦 Install Artillery CLI
+        # Install the specified version of Artillery globally
         run: |
           npm install -g artillery@${{ env.ARTILLERY_VERSION }}
           # Install metrics-by-endpoint plugin explicitly
       - name: 📦 Install Artillery CLI Plugin
+        # Install the required Artillery plugin for detailed metrics
         run: |
           npm install --save-dev artillery-plugin-metrics-by-endpoint
 
       # ---------------------------------------------------------------
       - name: 🏷️ Define Test Name
         id: set_name
+        # Generates a unique test name based on inputs, date, and runner index
         run: |
           DATE=$(date +'%d%m%y')
+          RUNNER_INDEX=${{ matrix.runner_index }}
+
           if [ -n "${{ github.event.inputs.test_name }}" ]; then
-            NAME="${{ github.event.inputs.test_name }}"
+            BASE_NAME="${{ github.event.inputs.test_name }}"
           else
-            BASE=$(basename "${{ github.event.inputs.script_file }}" .yml)
-            NAME="test-${BASE}-${DATE}"
+            # Derive name from script file
+            SCRIPT_BASE=$(basename "${{ github.event.inputs.script_file }}" .yml)
+            BASE_NAME="test-${SCRIPT_BASE}-${DATE}"
           fi
+
+          # Append runner index to ensure unique report names across concurrent jobs
+          NAME="${BASE_NAME}-runner-${RUNNER_INDEX}"
+
           echo "test_name=$NAME" >> $GITHUB_OUTPUT
           echo "✅ Test Name: $NAME"
 
       # ---------------------------------------------------------------
       - name: 🧹 Cleanup Old Reports
+        # Skips if test_type is not 'cleanup'
         if: ${{ github.event.inputs.test_type == 'cleanup' }}
+        # Finds and deletes reports older than the specified days
         run: |
           echo "🧺 Deleting reports older than ${{ github.event.inputs.cleanup_days }} days..."
           find "${{ env.REPORT_DIR }}" -type f -mtime +${{ github.event.inputs.cleanup_days }} -print -delete || true
@@ -107,20 +210,24 @@ jobs:
 
       # ---------------------------------------------------------------
       - name: 💤 Skip Execution in Cleanup Mode
+        # Skips subsequent steps if in cleanup mode
         if: ${{ github.event.inputs.test_type == 'cleanup' }}
         run: echo "Cleanup done. Skipping Artillery execution."
 
       # ---------------------------------------------------------------
       - name: 🚀 Run Artillery Test
+        # Executes the load/stress test, skipping if test_type is 'cleanup'
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         run: |
+          # Ensure report directory exists
           mkdir -p "${{ env.REPORT_DIR }}"
           REPORT_JSON="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.json"
           REPORT_HTML="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.html"
 
-          echo "▶️ Running Artillery test script: ${{ github.event.inputs.script_file }}"
+          echo "▶️ Running Artillery test script: ${{ github.event.inputs.script_file }} on Runner ${{ matrix.runner_index }}"
           echo "🌍 Target URL: ${{ vars.BASE_URL }}"
 
+          # Run Artillery with environment variables injected from GitHub secrets/vars
           ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
@@ -129,10 +236,12 @@ jobs:
           --quiet \
           > /dev/null
 
+          # Generate the standard HTML report from the JSON output
           npx artillery report "$REPORT_JSON" --output "$REPORT_HTML"
 
       # ---------------------------------------------------------------
       - name: 🐍 Setup Python
+        # Set up Python environment for report generation, skip if cleanup
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         uses: actions/setup-python@v5
         with:
@@ -140,6 +249,7 @@ jobs:
 
       # ---------------------------------------------------------------
       - name: 📦 Install Python Dependencies
+        # Install Python packages required for the custom dashboard script
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         run: |
           python -m pip install --upgrade pip
@@ -147,18 +257,22 @@ jobs:
 
       # ---------------------------------------------------------------
       - name: 🧮 Generate Full HTML Dashboard
+        # Execute custom Python script to create a rich analytics report
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         run: |
           echo "📊 Running custom Python report generator..."
+          # Copy script file as config.yml for the Python script
           cp "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" config.yml
           python generate_artillery_dashboard.py
         env:
+          # Define environment variables for the Python script
           INPUT_JSON: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.json"
           INPUT_YAML: "config.yml"
           OUTPUT_HTML: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}-full.html"
 
       # ---------------------------------------------------------------
       - name: 📦 Package Results
+        # Bundle all generated reports and the source script into a zip file
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         run: |
           ZIP_FILE="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.zip"
@@ -171,6 +285,7 @@ jobs:
 
       # ---------------------------------------------------------------
       - name: 📤 Upload Artifact
+        # Uploads the packaged zip file as a workflow artifact
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
         uses: actions/upload-artifact@v4
         with:
