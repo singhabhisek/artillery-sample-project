@@ -33,7 +33,7 @@ on:
       script_file:
         description: "YAML file from 'scripts/' folder (e.g. login-test.yml)"
         required: false
-        default: "login-test.yml"
+        default: "cloudrun-loadtest.yml"
       test_name:
         description: "Optional custom name for test run"
         required: false
