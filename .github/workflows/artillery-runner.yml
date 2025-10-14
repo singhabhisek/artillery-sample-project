@@ -79,7 +79,7 @@ jobs:
         run: |
           npm install -g artillery@${{ env.ARTILLERY_VERSION }}
           # Install metrics-by-endpoint plugin explicitly
-          npm install -g @artilleryio/plugin-metrics-by-endpoint
+          npm i artillery-plugin-metrics-by-endpoint
 
       # ---------------------------------------------------------------
       - name: 🏷️ Define Test Name
