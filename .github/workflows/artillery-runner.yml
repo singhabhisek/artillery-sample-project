@@ -3,8 +3,10 @@
 # =====================================================================
 # 💡 Purpose:
 #    Automates Artillery performance tests inside GitHub Actions.
-#    Supports selectable environments (beta/gamma) & auto-pulls
+#    Supports selectable environments (test/gamma) & auto-pulls
 #    BASE_URL, API_KEY, and AUTH_HEADER from GitHub Environment Secrets.
+#    Additionally runs a Python dashboard generator to produce
+#    a rich HTML analytics report.
 # =====================================================================
 
 name: 🧨 Run Artillery Tests
@@ -16,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Choose target environment (beta or gamma)"
+        description: "Choose target environment (test or gamma)"
         required: true
         type: choice
         options:
@@ -58,8 +60,7 @@ jobs:
   run-artillery:
     runs-on: ubuntu-latest
 
-    # 🔐 This ties the job to the selected GitHub Environment.
-    # GitHub automatically injects environment vars & secrets.
+    # 🔐 Tie this job to the selected GitHub Environment.
     environment: ${{ github.event.inputs.environment }}
 
     steps:
@@ -113,17 +114,41 @@ jobs:
           REPORT_HTML="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.html"
 
           echo "▶️ Running Artillery test script: ${{ github.event.inputs.script_file }}"
-          echo "🌍 Target URL: ${{ vars.BASE_URL }}"  # Pulled from GitHub Environment Variable
+          echo "🌍 Target URL: ${{ vars.BASE_URL }}"
 
-          # Environment variables passed to Artillery for substitution
           ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" \
             --output "$REPORT_JSON"
 
-          # Generate HTML report
           artillery report "$REPORT_JSON" --output "$REPORT_HTML"
+
+      # ---------------------------------------------------------------
+      - name: 🐍 Setup Python
+        if: ${{ github.event.inputs.test_type != 'cleanup' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ---------------------------------------------------------------
+      - name: 📦 Install Python Dependencies
+        if: ${{ github.event.inputs.test_type != 'cleanup' }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyyaml plotly
+
+      # ---------------------------------------------------------------
+      - name: 🧮 Generate Full HTML Dashboard
+        if: ${{ github.event.inputs.test_type != 'cleanup' }}
+        run: |
+          echo "📊 Running custom Python report generator..."
+          cp "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" config.yml
+          python generate_artillery_dashboard.py
+        env:
+          INPUT_JSON: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.json"
+          INPUT_YAML: "config.yml"
+          OUTPUT_HTML: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}-full.html"
 
       # ---------------------------------------------------------------
       - name: 📦 Package Results
@@ -133,7 +158,8 @@ jobs:
           zip -j "$ZIP_FILE" \
             "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" \
             "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.json" \
-            "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.html"
+            "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.html" \
+            "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}-full.html"
           echo "✅ Packaged results: $ZIP_FILE"
 
       # ---------------------------------------------------------------
