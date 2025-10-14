@@ -76,7 +76,10 @@ jobs:
 
       # ---------------------------------------------------------------
       - name: 📦 Install Artillery CLI
-        run: npm install -g artillery@${{ env.ARTILLERY_VERSION }}
+        run: |
+          npm install -g artillery@${{ env.ARTILLERY_VERSION }}
+          # Install metrics-by-endpoint plugin explicitly
+          npm install -g @artilleryio/plugin-metrics-by-endpoint
 
       # ---------------------------------------------------------------
       - name: 🏷️ Define Test Name
