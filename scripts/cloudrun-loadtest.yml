@@ -75,6 +75,18 @@ config:
 # 💡 Scenario: Simulate a complete microservice transaction
 # =====================================================================
 scenarios:
+  - name: "Random API"
+    flow:
+      # 🧍 Step 1: Fetch Random API details
+      - get:
+          url: "https://random-error-api-994656192388.us-central1.run.app"
+          
+  - name: "Reports API"
+    flow:
+      # 🧍 Step 1: Fetch Random API details
+      - get:
+          url: "https://reports-994656192388.us-central1.run.app/"
+          
   - name: "GET user profile → create order → charge payment"
     flow:
       # 🧍 Step 1: Fetch user details
