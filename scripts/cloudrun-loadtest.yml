@@ -30,7 +30,7 @@ config:
       name: "Steady Load"
 
   # ⚙️ Processor script (Node.js) for custom hooks & error handling
-  processor: "./scripts/hooks.js"
+  processor: "./hooks.js"
 
   # 🔌 Plugins to extend Artillery functionality
   plugins:
