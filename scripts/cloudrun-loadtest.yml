@@ -55,7 +55,7 @@ config:
   # 📊 CSV-based payloads for dynamic data
   payload:
     # Each virtual user gets one unique record from users.csv
-    - path: "users.csv"
+    - path: "../data/users.csv"
       fields:
         - "userId"
         - "firstName"
@@ -64,7 +64,7 @@ config:
       order: sequence
 
     # Random order data (different per request)
-    - path: "orders.csv"
+    - path: "../data/orders.csv"
       fields:
         - "productId"
         - "quantity"
