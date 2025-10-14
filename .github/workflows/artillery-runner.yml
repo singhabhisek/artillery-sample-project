@@ -81,7 +81,7 @@ jobs:
           # Install metrics-by-endpoint plugin explicitly
       - name: 📦 Install Artillery CLI Plugin
         run: |
-          npm install -g artillery-plugin-metrics-by-endpoint
+          npm install --save-dev artillery-plugin-metrics-by-endpoint
 
       # ---------------------------------------------------------------
       - name: 🏷️ Define Test Name
@@ -124,10 +124,10 @@ jobs:
           ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
-          artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" \
+          npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" \
             --output "$REPORT_JSON"
 
-          artillery report "$REPORT_JSON" --output "$REPORT_HTML"
+          npx artillery report "$REPORT_JSON" --output "$REPORT_HTML"
 
       # ---------------------------------------------------------------
       - name: 🐍 Setup Python
