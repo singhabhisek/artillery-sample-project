@@ -48,7 +48,7 @@ on:
 # Default environment variables (applies to all jobs)
 # ---------------------------------------------------------------------
 env:
-  ARTILLERY_VERSION: "2.0.21"
+  ARTILLERY_VERSION: "2.0.26"
   SCRIPTS_DIR: "./scripts"
   DATA_DIR: "./data"
   REPORT_DIR: "./artillery-results"
