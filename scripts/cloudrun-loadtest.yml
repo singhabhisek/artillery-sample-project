@@ -35,7 +35,7 @@ config:
   # 🔌 Plugins to extend Artillery functionality
   plugins:
     ensure: {}                       # Add pass/fail checks
-    artillery-plugin-endpoints: {}   # Endpoint-level metrics summary
+    metrics-by-endpoint: {}   # Endpoint-level metrics summary
 
   # ✅ Ensure thresholds (test fails if these not met)
   ensure:
