@@ -75,6 +75,11 @@ config:
 # 💡 Scenario: Simulate a complete microservice transaction
 # =====================================================================
 scenarios:
+  - name: "Confirm Data Load and Use"
+    flow:
+      # Use the 'log' action to print the variable value to the console/report
+      - log: "Starting scenario for User ID: {{ userId }} (Name: {{ firstName }})"
+      
   - name: "Random API"
     flow:
       # 🧍 Step 1: Fetch Random API details
