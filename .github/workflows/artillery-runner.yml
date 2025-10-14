@@ -44,15 +44,6 @@ on:
         description: "Delete reports older than X days (for cleanup mode)"
         required: false
         default: "7"
-      # New Input: Allows selecting the number of concurrent runners (VMs)
-      runners_to_use:
-        description: "Number of concurrent runners (VMs) for the test matrix."
-        required: true
-        type: choice
-        options:
-          - '1'
-          - '2'
-          - '4'
 
 # ---------------------------------------------------------------------
 # Default environment variables (applies to all jobs)
@@ -72,37 +63,14 @@ jobs:
     # Specifies the type of runner machine to use (GitHub-hosted Ubuntu)
     runs-on: ubuntu-latest
 
-    # -----------------------------------------------------------------
-    # Strategy: Defines the matrix for running concurrent runners
-    # We define a max of 4 runners and use a conditional step to skip
-    # runners beyond the user-requested amount.
-    # -----------------------------------------------------------------
-    strategy:
-      fail-fast: false # Allows all runners to complete even if one fails
-      matrix:
-        # Define the maximum number of runners this workflow supports
-        runner_index: [1, 2, 3, 4]
-
-    # Dynamically name the job to show which runner is executing
-    name: Runner ${{ matrix.runner_index }} of ${{ github.event.inputs.runners_to_use }}
-
     # 🔐 Tie this job to the selected GitHub Environment for secret access.
     environment: ${{ github.event.inputs.environment }}
 
     steps:
       # ---------------------------------------------------------------
-      # 🛑 Check/Skip Matrix Runner
-      # ---------------------------------------------------------------
-      # This step checks the current matrix index against the user input.
-      # If the index is greater than the requested count (e.g., runner 3 requested 2),
-      # the step fails, immediately cancelling this specific matrix job instance.
-      - name: 🛑 Check/Skip Matrix Runner
-        if: ${{ matrix.runner_index > fromJson(github.event.inputs.runners_to_use) }}
-        run: |
-          echo "Skipping matrix runner ${{ matrix.runner_index }}. Only ${{ github.event.inputs.runners_to_use }} runners were requested."
-          # Exit with an error code to immediately fail this job instance
-          exit 1
-      
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
       # ---------------------------------------------------------------
       # ℹ️ Runner Provisioning Details (Flag Requirement)
       # ---------------------------------------------------------------
@@ -115,8 +83,6 @@ jobs:
           echo "=========================================================="
           echo "🔥 GITHUB ACTIONS RUNNER VM DETAILS (Artillery Test Host) 🔥"
           echo "=========================================================="
-          echo "MATRIX RUNNER INDEX: ${{ matrix.runner_index }} of ${{ github.event.inputs.runners_to_use }}"
-          echo "----------------------------------------------------------"
 
           # 1. VM Provisioned Name/OS
           # ${{ runner.os }} gives 'Linux' or 'Windows', uname gives kernel details
@@ -156,10 +122,6 @@ jobs:
           SHELL: /bin/bash
 
       # ---------------------------------------------------------------
-      - name: 📥 Checkout Repository
-        uses: actions/checkout@v4
-
-      # ---------------------------------------------------------------
       - name: ⚙️ Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -179,22 +141,16 @@ jobs:
       # ---------------------------------------------------------------
       - name: 🏷️ Define Test Name
         id: set_name
-        # Generates a unique test name based on inputs, date, and runner index
+        # Generates a unique test name based on inputs or defaults
         run: |
           DATE=$(date +'%d%m%y')
-          RUNNER_INDEX=${{ matrix.runner_index }}
-
           if [ -n "${{ github.event.inputs.test_name }}" ]; then
-            BASE_NAME="${{ github.event.inputs.test_name }}"
+            NAME="${{ github.event.inputs.test_name }}"
           else
-            # Derive name from script file
-            SCRIPT_BASE=$(basename "${{ github.event.inputs.script_file }}" .yml)
-            BASE_NAME="test-${SCRIPT_BASE}-${DATE}"
+            # Derive name from script file and date if no custom name is provided
+            BASE=$(basename "${{ github.event.inputs.script_file }}" .yml)
+            NAME="test-${BASE}-${DATE}"
           fi
-
-          # Append runner index to ensure unique report names across concurrent jobs
-          NAME="${BASE_NAME}-runner-${RUNNER_INDEX}"
-
           echo "test_name=$NAME" >> $GITHUB_OUTPUT
           echo "✅ Test Name: $NAME"
 
@@ -224,7 +180,7 @@ jobs:
           REPORT_JSON="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.json"
           REPORT_HTML="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.html"
 
-          echo "▶️ Running Artillery test script: ${{ github.event.inputs.script_file }} on Runner ${{ matrix.runner_index }}"
+          echo "▶️ Running Artillery test script: ${{ github.event.inputs.script_file }}"
           echo "🌍 Target URL: ${{ vars.BASE_URL }}"
 
           # Run Artillery with environment variables injected from GitHub secrets/vars
