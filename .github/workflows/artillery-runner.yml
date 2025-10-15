@@ -2,18 +2,20 @@
 # 🧪 GitHub Actions Workflow: Artillery Load/Stress Test Runner
 # =====================================================================
 # 💡 Purpose:
-#   Automates Artillery performance tests inside GitHub Actions.
-#   Supports selectable environments (test/gamma) & auto-pulls
-#   BASE_URL, API_KEY, and AUTH_HEADER from GitHub Environment Secrets.
-#   Additionally runs a Python dashboard generator to produce
-#   a rich HTML analytics report.
+#   Automates Artillery performance/load/stress tests inside GitHub Actions.
+#   Allows selecting:
+#     - Environment: (test / gamma)
+#     - Test Type: (load / stress / cleanup)
+#     - Number of concurrent runners (1–4)
+#   Pulls environment variables like BASE_URL, API_KEY, and AUTH_HEADER
+#   from GitHub Environment Secrets.
+#   Optionally generates a rich HTML analytics dashboard via Python.
 # =====================================================================
 
 name: 🧨 Run Artillery Tests
 
 # ---------------------------------------------------------------------
-# Manual trigger: allows running this workflow manually from GitHub UI.
-# Provides configurable input parameters.
+# Trigger: Manual run from GitHub Actions UI with user-defined inputs
 # ---------------------------------------------------------------------
 on:
   workflow_dispatch:
@@ -41,11 +43,11 @@ on:
         description: "Optional custom name for test run"
         required: false
       cleanup_days:
-        description: "Delete reports older than X days (for cleanup mode)"
+        description: "Delete reports older than X days (used in cleanup mode)"
         required: false
         default: "7"
       runners_to_use:
-        description: "Number of concurrent runners (VMs) for the test matrix."
+        description: "Number of concurrent runners (VMs) for the test matrix"
         required: true
         type: choice
         options:
@@ -54,7 +56,7 @@ on:
           - '4'
 
 # ---------------------------------------------------------------------
-# Default environment variables (applies to all jobs)
+# Default environment variables used across all jobs
 # ---------------------------------------------------------------------
 env:
   ARTILLERY_VERSION: "2.0.26"
@@ -63,26 +65,44 @@ env:
   REPORT_DIR: "./artillery-results"
 
 # ---------------------------------------------------------------------
-# Main Job: Executes Artillery across concurrent runners
+# Main Job: Executes Artillery Tests across multiple concurrent runners
 # ---------------------------------------------------------------------
 jobs:
   run-artillery:
-    # ✅ Skip unused runners cleanly if above requested count
-    if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
-
+    # Each matrix instance runs on a separate GitHub-hosted Ubuntu VM
     runs-on: ubuntu-latest
+    # Attach the workflow to the selected GitHub Environment for secrets
     environment: ${{ github.event.inputs.environment }}
 
+    # ---------------------------------------------------------------
+    # Matrix Strategy: Allows concurrent test runners
+    # - Up to 4 runners supported
+    # - We'll skip unused runners dynamically
+    # ---------------------------------------------------------------
     strategy:
       fail-fast: false
       matrix:
         runner_index: [1, 2, 3, 4]
 
+    # Dynamic name to easily identify which runner is which
     name: Runner ${{ matrix.runner_index }} of ${{ github.event.inputs.runners_to_use }}
 
     steps:
       # ---------------------------------------------------------------
-      # ℹ️ Display information about the GitHub-hosted runner
+      # ✅ Step 1: Skip Unused Runners
+      # ---------------------------------------------------------------
+      # GitHub Actions does NOT allow using `matrix.*` in a job-level if.
+      # Therefore, we do the skipping at the first step using a condition.
+      # If the current runner index is greater than requested, exit early.
+      # ---------------------------------------------------------------
+      - name: 🛑 Skip Unused Runners
+        if: ${{ matrix.runner_index > fromJson(github.event.inputs.runners_to_use) }}
+        run: |
+          echo "Skipping this runner — index ${{ matrix.runner_index }} > requested ${{ github.event.inputs.runners_to_use }}"
+          exit 0
+
+      # ---------------------------------------------------------------
+      # ℹ️ Print information about the GitHub-hosted runner
       # ---------------------------------------------------------------
       - name: ℹ️ Print Runner Provisioning Details
         shell: bash
@@ -112,13 +132,13 @@ jobs:
           echo "=========================================================="
 
       # ---------------------------------------------------------------
-      # 📥 Checkout code
+      # 📥 Step 2: Checkout the repository
       # ---------------------------------------------------------------
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
       # ---------------------------------------------------------------
-      # ⚙️ Setup Node.js and Install Artillery
+      # ⚙️ Step 3: Setup Node.js and Install Artillery
       # ---------------------------------------------------------------
       - name: ⚙️ Setup Node.js
         uses: actions/setup-node@v4
@@ -131,7 +151,7 @@ jobs:
           npm install --save-dev artillery-plugin-metrics-by-endpoint
 
       # ---------------------------------------------------------------
-      # 🏷️ Generate unique test name for reports
+      # 🏷️ Step 4: Define a Unique Test Name
       # ---------------------------------------------------------------
       - name: 🏷️ Define Test Name
         id: set_name
@@ -152,7 +172,7 @@ jobs:
           echo "✅ Test Name: $NAME"
 
       # ---------------------------------------------------------------
-      # 🧹 Cleanup mode (delete old reports)
+      # 🧹 Step 5: Cleanup Old Reports (cleanup mode only)
       # ---------------------------------------------------------------
       - name: 🧹 Cleanup Old Reports
         if: ${{ github.event.inputs.test_type == 'cleanup' }}
@@ -166,7 +186,7 @@ jobs:
         run: echo "Cleanup done. Skipping Artillery execution."
 
       # ---------------------------------------------------------------
-      # 🚀 Run Artillery test (for load/stress)
+      # 🚀 Step 6: Run Artillery Load/Stress Test
       # ---------------------------------------------------------------
       - name: 🚀 Run Artillery Test
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -185,10 +205,11 @@ jobs:
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" \
           --output "$REPORT_JSON" --quiet
 
+          # Generate standard Artillery HTML report
           npx artillery report "$REPORT_JSON" --output "$REPORT_HTML"
 
       # ---------------------------------------------------------------
-      # 🐍 Setup Python & Generate dashboard
+      # 🐍 Step 7: Setup Python and Generate Advanced Dashboard
       # ---------------------------------------------------------------
       - name: 🐍 Setup Python
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -214,7 +235,7 @@ jobs:
           OUTPUT_HTML: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}-full.html"
 
       # ---------------------------------------------------------------
-      # 📦 Package & upload results
+      # 📦 Step 8: Package and Upload Artifacts
       # ---------------------------------------------------------------
       - name: 📦 Package Results
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
