@@ -22,15 +22,15 @@ on:
         description: "Choose target environment (test or gamma)"
         required: true
         type: choice
-        options:
-          - test
+        options: # <-- Indented correctly: Aligned with 'type'
+          - test # <-- Indented 2 spaces further than 'options'
           - gamma
       test_type:
         description: "Choose test type (load, stress, cleanup)"
         required: true
         type: choice
-        options:
-          - load
+        options: # <-- Indented correctly: Aligned with 'type'
+          - load # <-- Indented 2 spaces further than 'options'
           - stress
           - cleanup
       script_file:
@@ -44,18 +44,19 @@ on:
         description: "Delete reports older than X days (for cleanup mode)"
         required: false
         default: "7"
-      # Input: Allows selecting the number of concurrent runners (VMs)
+      # New Input: Allows selecting the number of concurrent runners (VMs)
       runners_to_use:
         description: "Number of concurrent runners (VMs) for the test matrix."
         required: true
         type: choice
-        options:
-          - '1'
+        options: # <-- Indented correctly: Aligned with 'type'
+          - '1' # <-- Indented 2 spaces further than 'options'
           - '2'
           - '4'
 
 # ---------------------------------------------------------------------
 # Default environment variables (applies to all jobs)
+# Sets common variables used throughout the workflow.
 # ---------------------------------------------------------------------
 env:
   ARTILLERY_VERSION: "2.0.26"
@@ -68,11 +69,10 @@ env:
 # ---------------------------------------------------------------------
 jobs:
   run-artillery:
-    # 🛑 KEY CHANGE: Use a job-level 'if' condition to SKIP jobs that
-    # exceed the requested number of runners. This results in a cleaner
-    # "Skipped" status instead of a "Failure" status.
+    # 🛑 FIX: Use a job-level 'if' condition to cleanly SKIP jobs that
+    # exceed the requested number of runners, resulting in a green/skipped run.
     if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
-
+    
     # Specifies the type of runner machine to use (GitHub-hosted Ubuntu)
     runs-on: ubuntu-latest
 
@@ -92,11 +92,10 @@ jobs:
     environment: ${{ github.event.inputs.environment }}
 
     steps:
-      # ⚠️ REMOVED: The previous "Check/Skip Matrix Runner" step is removed
-      # because the job-level 'if' condition handles skipping more effectively.
+      # The previous "Check/Skip Matrix Runner" step is now redundant and removed.
       
       # ---------------------------------------------------------------
-      # ℹ️ Runner Provisioning Details
+      # ℹ️ Runner Provisioning Details (Flag Requirement)
       # ---------------------------------------------------------------
       # This step captures and prints the specifications of the
       # GitHub-hosted VM (the runner) executing this workflow.
