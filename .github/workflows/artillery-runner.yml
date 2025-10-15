@@ -35,6 +35,13 @@ on:
         required: false
         default: "7"
 
+
+env:
+  ARTILLERY_VERSION: "2.0.26"
+  SCRIPTS_DIR: "./scripts"
+  DATA_DIR: "./data"
+  REPORT_DIR: "./artillery-results"
+  
 # =========================================================
 # 1️⃣ Job: Run Artillery on Multiple Runners in Parallel
 # =========================================================
@@ -76,6 +83,11 @@ jobs:
           MEM_GB=$(printf "%.2f" "$(echo "$MEM_KB / 1024 / 1024" | bc -l)")
           echo "Memory: ${MEM_GB} GB"
           echo "Public IP: $(curl -s api.ipify.org)"
+          CITY=$(echo "$LOCATION_INFO" | jq -r '.city')
+          REGION=$(echo "$LOCATION_INFO" | jq -r '.regionName')
+          COUNTRY=$(echo "$LOCATION_INFO" | jq -r '.country')
+          echo "Public IP: $PUBLIC_IP"
+          echo "Location: $CITY, $REGION, $COUNTRY"
           echo "===================================================="
 
       # ---------------------------------------------------------------
@@ -90,10 +102,11 @@ jobs:
       # ---------------------------------------------------------------
       # Step 3: Install Artillery
       # ---------------------------------------------------------------
-      - name: ⚙️ Install Artillery
+      - name: ⚙️ Install Artillery + Plugin
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
         run: |
-          npm install -g artillery@2.0.26
+          npm install -g artillery@${{ env.ARTILLERY_VERSION }}
+          npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
 
       # ---------------------------------------------------------------
@@ -112,13 +125,13 @@ jobs:
           RESULT_HTML="${TEST_NAME}-${TIMESTAMP}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}-full.html"
 
           echo "🧪 Running test: ${RESULT_JSON}"
-          artillery run ${{ github.event.inputs.scenario_file }} \
-            -o "artillery-results/${RESULT_JSON}"
-
-          artillery report \
-            --output "artillery-results/${RESULT_HTML}" \
-            "artillery-results/${RESULT_JSON}"
-
+          ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
+          API_KEY="${{ secrets.API_KEY }}" \
+          AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
+          npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
+          --output "artillery-results/${RESULT_JSON}" --quiet
+          npx artillery report "artillery-results/${RESULT_JSON}" --output "artillery-results/$REPORT_HTML"
+          
           echo "result_json=${RESULT_JSON}" >> $GITHUB_OUTPUT
           echo "result_html=${RESULT_HTML}" >> $GITHUB_OUTPUT
 
