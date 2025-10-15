@@ -1,39 +1,42 @@
-name: Artillery CloudRun Load Test
+name: Artillery Load Test (Multi-Runner)
 
 on:
   workflow_dispatch:
     inputs:
       test_type:
-        description: "Choose test type (load, stress, cleanup)"
+        description: "Choose test type (e.g., login, checkout, etc.)"
         required: true
-        default: "load"
+        type: string
       environment:
-        description: "Target environment name"
+        description: "Environment to run test on (dev/stage/prod)"
         required: true
-        default: "staging"
+        type: string
       runners_to_use:
-        description: "Number of runners to use (1–4)"
+        description: "Number of parallel runners to use (1–4)"
         required: true
         default: "1"
+      scenario_file:
+        description: "YAML file for Artillery test (e.g., cloudrun-loadtest.yml)"
+        required: true
+        default: "cloudrun-loadtest.yml"
 
+# =========================================================
+# 1️⃣ Job: Run Artillery on Multiple Runners in Parallel
+# =========================================================
 jobs:
-  # ==========================================================
-  # JOB 1: Run Artillery Load Tests
-  # ==========================================================
   run-artillery:
-    name: "Run Artillery Test - Runner ${{ matrix.runner_index }}"
-    # Use fixed matrix [1,2,3,4] — skip unused ones dynamically
+    name: Run Artillery - Runner ${{ matrix.runner_index }}
+    runs-on: ubuntu-latest
+
+    # Define up to 4 parallel runners (we will conditionally skip extras)
     strategy:
       fail-fast: false
       matrix:
         runner_index: [1, 2, 3, 4]
 
-    runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
-
     steps:
       # ---------------------------------------------------------------
-      # Step 0: Skip this runner if not requested
+      # Step 0: Skip unused runners gracefully (green, not red ❌)
       # ---------------------------------------------------------------
       - name: 🛑 Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJson(github.event.inputs.runners_to_use) }}
@@ -43,9 +46,9 @@ jobs:
           exit 0
 
       # ---------------------------------------------------------------
-      # Step 1: Print system details for visibility
+      # Step 1: Print Runner Provisioning Details (system info)
       # ---------------------------------------------------------------
-      - name: ℹ️ Runner System Info
+      - name: ℹ️ Print Runner Provisioning Details
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
         shell: bash
         run: |
@@ -61,74 +64,74 @@ jobs:
           echo "===================================================="
 
       # ---------------------------------------------------------------
-      # Step 2: Checkout repository
-      # ---------------------------------------------------------------
-      - name: 📥 Checkout Repository
-        if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
-        uses: actions/checkout@v4
-
-      # ---------------------------------------------------------------
-      # Step 3: Setup Node.js (for Artillery)
+      # Step 2: Setup Node.js (needed for Artillery)
       # ---------------------------------------------------------------
       - name: 🧩 Setup Node.js
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "20"
 
       # ---------------------------------------------------------------
-      # Step 4: Install Artillery
+      # Step 3: Install Artillery
       # ---------------------------------------------------------------
       - name: ⚙️ Install Artillery
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
         run: |
           npm install -g artillery@2.0.26
-          artillery version
+          artillery --version
 
       # ---------------------------------------------------------------
-      # Step 5: Run Artillery Load Test
+      # Step 4: Run the test and create unique JSON + HTML result names
       # ---------------------------------------------------------------
       - name: 🚀 Run Artillery Test
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
+        id: run_test
         shell: bash
         run: |
           mkdir -p artillery-results
-          RUN_ID="test-${{ github.event.inputs.environment }}-${{ github.run_number }}-runner-${{ matrix.runner_index }}"
-          echo "▶️ Running Artillery test for: ${RUN_ID}"
+          TEST_NAME="test-${{ github.event.inputs.test_type }}-${{ github.event.inputs.environment }}"
+          TIMESTAMP=$(date +%d%m%y)
+          RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
+          RESULT_JSON="${TEST_NAME}-${TIMESTAMP}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}.json"
+          RESULT_HTML="${TEST_NAME}-${TIMESTAMP}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}-full.html"
 
-          # Add random suffix for unique JSON filename
-          RAND_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
-          JSON_FILE="${RUN_ID}-${RAND_SUFFIX}.json"
-          HTML_FILE="${RUN_ID}-${RAND_SUFFIX}-full.html"
+          echo "🧪 Running test: ${RESULT_JSON}"
+          artillery run ${{ github.event.inputs.scenario_file }} \
+            -o "artillery-results/${RESULT_JSON}"
 
-          artillery run ./cloudrun-loadtest.yml \
-            -o "artillery-results/${JSON_FILE}"
+          artillery report \
+            --output "artillery-results/${RESULT_HTML}" \
+            "artillery-results/${RESULT_JSON}"
 
-          # Generate HTML report using Artillery built-in reporter
-          artillery report "artillery-results/${JSON_FILE}" \
-            -o "artillery-results/${HTML_FILE}"
-
-          # Zip the output for artifact upload
-          cd artillery-results
-          zip -r "${RUN_ID}.zip" ./*
-          cd ..
-
-          echo "✅ Artillery test complete for runner-${{ matrix.runner_index }}"
-          echo "✅ Created ZIP: artillery-results/${RUN_ID}.zip"
+          echo "result_json=${RESULT_JSON}" >> $GITHUB_OUTPUT
+          echo "result_html=${RESULT_HTML}" >> $GITHUB_OUTPUT
 
       # ---------------------------------------------------------------
-      # Step 6: Upload Artillery result artifact
+      # Step 5: Package test results into a ZIP per runner
       # ---------------------------------------------------------------
-      - name: 📤 Upload Artillery Result ZIP
+      - name: 📦 Package Artillery Results
+        if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
+        run: |
+          TEST_NAME="test-${{ github.event.inputs.test_type }}-${{ github.event.inputs.environment }}"
+          ZIP_NAME="${TEST_NAME}-${{ matrix.runner_index }}.zip"
+          mkdir -p upload
+          zip -r "upload/${ZIP_NAME}" artillery-results/*${{ matrix.runner_index }}*.json artillery-results/*${{ matrix.runner_index }}*.html ${{ github.event.inputs.scenario_file }}
+          echo "Packaged ZIP: upload/${ZIP_NAME}"
+
+      # ---------------------------------------------------------------
+      # Step 6: Upload the ZIP as an artifact
+      # ---------------------------------------------------------------
+      - name: 📤 Upload Artillery Results
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
         uses: actions/upload-artifact@v4
         with:
-          name: "artillery-results-runner-${{ matrix.runner_index }}"
-          path: artillery-results/*.zip
+          name: artillery-results-runner-${{ matrix.runner_index }}
+          path: upload/*.zip
 
-  # ==========================================================
-  # JOB 2: Aggregate Results into Dashboard
-  # ==========================================================
+# =========================================================
+# 2️⃣ Job: Aggregate All Runner Reports (runs after all above)
+# =========================================================
   aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
     needs: [run-artillery]
@@ -137,17 +140,18 @@ jobs:
 
     steps:
       # ---------------------------------------------------------------
-      # Step 1: Download all artifacts from all runners
+      # Step 1: Download all Artifacts
       # ---------------------------------------------------------------
-      - name: 📥 Download All Runner Artifacts
+      - name: 📥 Download All Artifacts
         uses: actions/download-artifact@v4
         with:
           path: artillery-results
 
       # ---------------------------------------------------------------
-      # Step 2: Extract all ZIPs to separate subfolders
+      # Step 2: Extract all ZIPs into separate folders (no overwrite)
       # ---------------------------------------------------------------
-      - name: 🧩 Extract ZIPs per runner safely
+      - name: 🧩 Extract ZIPs per runner
+        id: extract
         shell: bash
         run: |
           mkdir -p combined-results
@@ -156,25 +160,28 @@ jobs:
             mkdir -p combined-results/"$foldername"
             unzip -o "$zipfile" -d combined-results/"$foldername" > /dev/null
           done
-          echo "✅ All runner ZIPs extracted safely"
+          echo "✅ Extracted all runner ZIPs into unique subfolders."
 
       # ---------------------------------------------------------------
-      # Step 3: Collect all JSON filenames (comma-separated)
+      # Step 3: Collect all JSON filenames for Python (comma-separated)
       # ---------------------------------------------------------------
-      - name: 🧾 Collect JSON file names
+      - name: 📝 Collect JSON filenames for Python
         id: collect_jsons
         shell: bash
         run: |
           JSON_FILES=""
-          for file in combined-results/*/*.json; do
-            JSON_FILES="$JSON_FILES,$(basename "$file")"
+          for folder in combined-results/*; do
+            json_file=$(ls "$folder"/*.json | head -n 1)
+            if [ -n "$json_file" ]; then
+              JSON_FILES="$JSON_FILES,$(basename "$json_file")"
+            fi
           done
           JSON_FILES="${JSON_FILES#,}"
           echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
-          echo "✅ JSON files to pass to Python: $JSON_FILES"
+          echo "✅ JSON files to pass: $JSON_FILES"
 
       # ---------------------------------------------------------------
-      # Step 4: Setup Python environment
+      # Step 4: Setup Python
       # ---------------------------------------------------------------
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
@@ -192,24 +199,24 @@ jobs:
       # ---------------------------------------------------------------
       # Step 6: Run Python Dashboard Generator
       # ---------------------------------------------------------------
-      - name: 🧮 Generate Consolidated Dashboard
+      - name: 🧮 Generate Combined Dashboard
         shell: bash
         run: |
-          # Copy YAML config (use first runner’s file)
+          # Copy YAML file from first runner folder
           cp combined-results/*/*.yml config.yml
 
-          # Run the Python script with comma-separated JSONs
+          # Call Python script with comma-separated JSONs
           python ../generate_artillery_dashboard.py \
             --json "${{ steps.collect_jsons.outputs.json_files }}" \
             --yaml config.yml \
             --output "../merged-dashboard.html"
 
-          echo "✅ Merged dashboard generated successfully."
+          echo "✅ Merged dashboard generated: merged-dashboard.html"
 
       # ---------------------------------------------------------------
-      # Step 7: Upload Combined Dashboard Artifact
+      # Step 7: Upload Combined Dashboard
       # ---------------------------------------------------------------
-      - name: 📤 Upload Merged Dashboard
+      - name: 📤 Upload Combined Dashboard
         uses: actions/upload-artifact@v4
         with:
           name: merged-artillery-dashboard
