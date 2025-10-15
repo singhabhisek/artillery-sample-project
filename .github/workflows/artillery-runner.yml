@@ -62,17 +62,17 @@ env:
   REPORT_DIR: "./artillery-results"
 
 # =====================================================================
-# Job 1: Run Artillery Tests (per runner)
+# Jobs
 # =====================================================================
 jobs:
+
+  # ===================================================================
+  # Job 1: Run Artillery Tests (per runner)
+  # ===================================================================
   run-artillery:
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment }}
 
-    # -----------------------------------------------------------------
-    # Matrix strategy: allows concurrent runners
-    # Maximum 4 runners; unused runners are skipped dynamically
-    # -----------------------------------------------------------------
     strategy:
       fail-fast: false
       matrix:
@@ -143,14 +143,12 @@ jobs:
         run: |
           DATE=$(date +'%d%m%y')
           RUNNER_INDEX=${{ matrix.runner_index }}
-
           if [ -n "${{ github.event.inputs.test_name }}" ]; then
             BASE_NAME="${{ github.event.inputs.test_name }}"
           else
             SCRIPT_BASE=$(basename "${{ github.event.inputs.script_file }}" .yml)
             BASE_NAME="test-${SCRIPT_BASE}-${DATE}"
           fi
-
           NAME="${BASE_NAME}-runner-${RUNNER_INDEX}"
           echo "test_name=$NAME" >> $GITHUB_OUTPUT
           echo "✅ Test Name: $NAME"
@@ -179,14 +177,12 @@ jobs:
           mkdir -p "${{ env.REPORT_DIR }}"
           REPORT_JSON="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.json"
           REPORT_HTML="${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.html"
-
           echo "Running Artillery script: ${{ github.event.inputs.script_file }}"
           ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.script_file }}" \
           --output "$REPORT_JSON" --quiet
-
           npx artillery report "$REPORT_JSON" --output "$REPORT_HTML"
 
       # ---------------------------------------------------------------
@@ -242,70 +238,70 @@ jobs:
           name: "${{ steps.set_name.outputs.test_name }}"
           path: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.zip"
 
-# =====================================================================
-# Job 2: Aggregate & Pass JSONs to Python Dashboard Generator
-# =====================================================================
-aggregate-reports:
-  if: ${{ github.event.inputs.test_type != 'cleanup' }}
-  needs: [run-artillery]
-  runs-on: ubuntu-latest
-  environment: ${{ github.event.inputs.environment }}
+  # ===================================================================
+  # Job 2: Aggregate & Pass JSONs to Python Dashboard Generator
+  # ===================================================================
+  aggregate-reports:
+    if: ${{ github.event.inputs.test_type != 'cleanup' }}
+    needs: [run-artillery]
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
 
-  steps:
-    # ---------------------------------------------------------------
-    # Step 1: Download all runner artifacts
-    # ---------------------------------------------------------------
-    - name: 📥 Download All Artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artillery-results
+    steps:
+      # ---------------------------------------------------------------
+      # Step 1: Download all runner artifacts
+      # ---------------------------------------------------------------
+      - name: 📥 Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artillery-results
 
-    # ---------------------------------------------------------------
-    # Step 2: Collect JSON filenames (comma-separated)
-    # ---------------------------------------------------------------
-    - name: 🧩 Collect All JSON Filenames
-      id: collect_jsons
-      shell: bash
-      run: |
-        mkdir -p combined-results
-        find artillery-results -type f -name '*.zip' -exec unzip -o {} -d combined-results \;
-        cd combined-results
-        JSON_FILES=$(ls -1 *.json | tr '\n' ',' | sed 's/,$//')
-        echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
-        echo "✅ JSON files to pass: $JSON_FILES"
+      # ---------------------------------------------------------------
+      # Step 2: Collect JSON filenames (comma-separated)
+      # ---------------------------------------------------------------
+      - name: 🧩 Collect All JSON Filenames
+        id: collect_jsons
+        shell: bash
+        run: |
+          mkdir -p combined-results
+          find artillery-results -type f -name '*.zip' -exec unzip -o {} -d combined-results \;
+          cd combined-results
+          JSON_FILES=$(ls -1 *.json | tr '\n' ',' | sed 's/,$//')
+          echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
+          echo "✅ JSON files to pass: $JSON_FILES"
 
-    # ---------------------------------------------------------------
-    # Step 3: Setup Python
-    # ---------------------------------------------------------------
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
+      # ---------------------------------------------------------------
+      # Step 3: Setup Python
+      # ---------------------------------------------------------------
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: 📦 Install Python Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pandas pyyaml plotly numpy
+      - name: 📦 Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyyaml plotly numpy
 
-    # ---------------------------------------------------------------
-    # Step 4: Run Python dashboard generator with all JSONs
-    # ---------------------------------------------------------------
-    - name: 🧮 Generate Combined Dashboard
-      shell: bash
-      run: |
-        cd combined-results
-        python ../generate_artillery_dashboard.py \
-          --json "${{ steps.collect_jsons.outputs.json_files }}" \
-          --yaml "${{ github.event.inputs.script_file }}" \
-          --output "../merged-dashboard.html"
-        echo "✅ Merged dashboard generated: merged-dashboard.html"
-        cd ..
+      # ---------------------------------------------------------------
+      # Step 4: Run Python dashboard generator with all JSONs
+      # ---------------------------------------------------------------
+      - name: 🧮 Generate Combined Dashboard
+        shell: bash
+        run: |
+          cd combined-results
+          python ../generate_artillery_dashboard.py \
+            --json "${{ steps.collect_jsons.outputs.json_files }}" \
+            --yaml "${{ github.event.inputs.script_file }}" \
+            --output "../merged-dashboard.html"
+          echo "✅ Merged dashboard generated: merged-dashboard.html"
+          cd ..
 
-    # ---------------------------------------------------------------
-    # Step 5: Upload merged dashboard as artifact
-    # ---------------------------------------------------------------
-    - name: 📤 Upload Combined Dashboard
-      uses: actions/upload-artifact@v4
-      with:
-        name: merged-artillery-dashboard
-        path: merged-dashboard.html
+      # ---------------------------------------------------------------
+      # Step 5: Upload merged dashboard as artifact
+      # ---------------------------------------------------------------
+      - name: 📤 Upload Combined Dashboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-artillery-dashboard
+          path: merged-dashboard.html
