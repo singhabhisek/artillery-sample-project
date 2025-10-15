@@ -4,21 +4,36 @@ on:
   workflow_dispatch:
     inputs:
       test_type:
-        description: "Choose test type (e.g., login, checkout, etc.)"
+        description: "Choose test type (e.g., load/cleanup)"
         required: true
-        type: string
+        type: choice
+        options:
+          - load
+          - stress
+          - cleanup
       environment:
         description: "Environment to run test on (dev/stage/prod)"
         required: true
-        type: string
+        type: choice
+        options:
+          - test
+          - prod
       runners_to_use:
         description: "Number of parallel runners to use (1–4)"
         required: true
-        default: "1"
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '4'
       scenario_file:
         description: "YAML file for Artillery test (e.g., cloudrun-loadtest.yml)"
         required: true
         default: "cloudrun-loadtest.yml"
+      cleanup_days:
+        description: "Delete reports older than X days (cleanup mode)"
+        required: false
+        default: "7"
 
 # =========================================================
 # 1️⃣ Job: Run Artillery on Multiple Runners in Parallel
