@@ -23,8 +23,8 @@ on:
         required: true
         type: choice
         options:
-          - test
-          - gamma
+          - test
+          - gamma
       test_type:
         description: "Choose test type (load, stress, cleanup)"
         required: true
