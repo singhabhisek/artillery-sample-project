@@ -1,18 +1,10 @@
 # =====================================================================
 # 🧪 GitHub Actions Workflow: Artillery Load/Stress Test Runner
 # =====================================================================
-# 💡 Purpose:
-#   Automates Artillery performance tests inside GitHub Actions.
-#   Supports selectable environments (test/gamma), test type (load/stress/cleanup),
-#   and multiple concurrent runners.
-#   Pulls BASE_URL, API_KEY, AUTH_HEADER from GitHub Environment Secrets.
-#   Generates a rich HTML dashboard via Python from JSON results.
-# =====================================================================
-
 name: 🧨 Run Artillery Tests
 
 # ---------------------------------------------------------------------
-# Trigger: Manual workflow_dispatch with user-defined inputs
+# Manual trigger with user inputs
 # ---------------------------------------------------------------------
 on:
   workflow_dispatch:
@@ -53,7 +45,7 @@ on:
           - '4'
 
 # ---------------------------------------------------------------------
-# Default environment variables for all jobs
+# Default environment variables
 # ---------------------------------------------------------------------
 env:
   ARTILLERY_VERSION: "2.0.26"
@@ -67,31 +59,28 @@ env:
 jobs:
 
   # ===================================================================
-  # Job 1: Run Artillery Tests (per runner)
+  # Job 1: Run Artillery Tests per Runner
   # ===================================================================
   run-artillery:
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment }}
 
+    # -----------------------------------------------------------------
+    # Dynamic matrix based on user input
+    # Only generates the requested number of runners
+    # -----------------------------------------------------------------
     strategy:
       fail-fast: false
       matrix:
-        runner_index: [1, 2, 3, 4]
+        runner_index: ${{ range(1, fromJson(github.event.inputs.runners_to_use) + 1) }}
 
+    # Dynamic job name for clarity in UI
     name: Runner ${{ matrix.runner_index }} of ${{ github.event.inputs.runners_to_use }}
 
     steps:
-      # ---------------------------------------------------------------
-      # Step 1: Skip unused runners if matrix index exceeds requested runners
-      # ---------------------------------------------------------------
-      - name: 🛑 Skip Unused Runners
-        if: ${{ matrix.runner_index > fromJson(github.event.inputs.runners_to_use) }}
-        run: |
-          echo "Skipping runner index ${{ matrix.runner_index }} as it exceeds requested ${{ github.event.inputs.runners_to_use }}"
-          exit 0
 
       # ---------------------------------------------------------------
-      # Step 2: Display runner info (OS, CPU, memory, IP, location)
+      # Step 1: Print runner details (OS, CPU, Memory, IP, location)
       # ---------------------------------------------------------------
       - name: ℹ️ Print Runner Provisioning Details
         shell: bash
@@ -99,7 +88,6 @@ jobs:
           echo "=========================================================="
           echo "🔥 GITHUB ACTIONS RUNNER VM DETAILS 🔥"
           echo "MATRIX RUNNER INDEX: ${{ matrix.runner_index }} of ${{ github.event.inputs.runners_to_use }}"
-          echo "----------------------------------------------------------"
           echo "VM/OS: ${{ runner.os }} (${{ runner.arch }})"
           echo "Kernel/OS Version: $(uname -sro)"
           echo "CPU Cores: $(nproc)"
@@ -116,13 +104,13 @@ jobs:
           echo "=========================================================="
 
       # ---------------------------------------------------------------
-      # Step 3: Checkout repository
+      # Step 2: Checkout repository
       # ---------------------------------------------------------------
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
       # ---------------------------------------------------------------
-      # Step 4: Setup Node.js and install Artillery CLI + plugin
+      # Step 3: Setup Node.js and install Artillery CLI + plugin
       # ---------------------------------------------------------------
       - name: ⚙️ Setup Node.js
         uses: actions/setup-node@v4
@@ -135,13 +123,14 @@ jobs:
           npm install --save-dev artillery-plugin-metrics-by-endpoint
 
       # ---------------------------------------------------------------
-      # Step 5: Generate unique test name per runner
+      # Step 4: Define unique test name per runner with random suffix
       # ---------------------------------------------------------------
       - name: 🏷️ Define Test Name
         id: set_name
         shell: bash
         run: |
-          DATE=$(date +'%d%m%y')
+          DATE=$(date +'%d%m%y')                           # Current date
+          RANDOM_SUFFIX=$RANDOM                             # Random number for uniqueness
           RUNNER_INDEX=${{ matrix.runner_index }}
           if [ -n "${{ github.event.inputs.test_name }}" ]; then
             BASE_NAME="${{ github.event.inputs.test_name }}"
@@ -149,12 +138,12 @@ jobs:
             SCRIPT_BASE=$(basename "${{ github.event.inputs.script_file }}" .yml)
             BASE_NAME="test-${SCRIPT_BASE}-${DATE}"
           fi
-          NAME="${BASE_NAME}-runner-${RUNNER_INDEX}"
+          NAME="${BASE_NAME}-runner-${RUNNER_INDEX}-${RANDOM_SUFFIX}"
           echo "test_name=$NAME" >> $GITHUB_OUTPUT
           echo "✅ Test Name: $NAME"
 
       # ---------------------------------------------------------------
-      # Step 6: Cleanup old reports (only if cleanup mode)
+      # Step 5: Cleanup old reports (only in cleanup mode)
       # ---------------------------------------------------------------
       - name: 🧹 Cleanup Old Reports
         if: ${{ github.event.inputs.test_type == 'cleanup' }}
@@ -163,9 +152,12 @@ jobs:
           find "${{ env.REPORT_DIR }}" -type f -mtime +${{ github.event.inputs.cleanup_days }} -print -delete || true
           echo "✅ Cleanup complete."
 
+      # ---------------------------------------------------------------
+      # Step 6: Skip execution if cleanup mode
+      # ---------------------------------------------------------------
       - name: 💤 Skip Execution in Cleanup Mode
         if: ${{ github.event.inputs.test_type == 'cleanup' }}
-        run: echo "Cleanup mode done. Skipping Artillery execution."
+        run: echo "Cleanup done. Skipping Artillery execution."
 
       # ---------------------------------------------------------------
       # Step 7: Run Artillery load/stress test
@@ -201,7 +193,7 @@ jobs:
           pip install pandas pyyaml plotly numpy
 
       # ---------------------------------------------------------------
-      # Step 9: Generate HTML dashboard (per runner)
+      # Step 9: Generate per-runner HTML dashboard
       # ---------------------------------------------------------------
       - name: 🧮 Generate Full HTML Dashboard
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -229,7 +221,7 @@ jobs:
           echo "✅ Packaged results: $ZIP_FILE"
 
       # ---------------------------------------------------------------
-      # Step 11: Upload artifact
+      # Step 11: Upload per-runner artifact
       # ---------------------------------------------------------------
       - name: 📤 Upload Artifact
         if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -239,7 +231,7 @@ jobs:
           path: "${{ env.REPORT_DIR }}/${{ steps.set_name.outputs.test_name }}.zip"
 
   # ===================================================================
-  # Job 2: Aggregate & Pass JSONs to Python Dashboard Generator
+  # Job 2: Aggregate JSONs & Generate Combined Dashboard
   # ===================================================================
   aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -248,8 +240,9 @@ jobs:
     environment: ${{ github.event.inputs.environment }}
 
     steps:
+
       # ---------------------------------------------------------------
-      # Step 1: Download all runner artifacts
+      # Step 1: Download all artifacts from runners
       # ---------------------------------------------------------------
       - name: 📥 Download All Artifacts
         uses: actions/download-artifact@v4
@@ -257,48 +250,68 @@ jobs:
           path: artillery-results
 
       # ---------------------------------------------------------------
-      # Step 2: Collect JSON filenames (comma-separated)
+      # Step 2: Extract each ZIP into its own subfolder to avoid YAML overwrites
       # ---------------------------------------------------------------
-      - name: 🧩 Collect All JSON Filenames
-        id: collect_jsons
+      - name: 🧩 Extract ZIPs per runner
+        id: extract
         shell: bash
         run: |
           mkdir -p combined-results
-          find artillery-results -type f -name '*.zip' -exec unzip -o {} -d combined-results \;
-          cd combined-results
-          JSON_FILES=$(ls -1 *.json | tr '\n' ',' | sed 's/,$//')
-          echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
-          echo "✅ JSON files to pass: $JSON_FILES"
+          for zipfile in artillery-results/*.zip; do
+            foldername=$(basename "$zipfile" .zip)   # Use ZIP name as folder
+            mkdir -p combined-results/"$foldername"
+            unzip -o "$zipfile" -d combined-results/"$foldername" > /dev/null
+          done
+          echo "✅ All ZIPs extracted into separate folders"
 
       # ---------------------------------------------------------------
-      # Step 3: Setup Python
+      # Step 3: Collect JSON filenames (unique per runner) for Python input
+      # ---------------------------------------------------------------
+      - name: 📝 Collect JSON filenames for Python
+        id: collect_jsons
+        shell: bash
+        run: |
+          JSON_FILES=""
+          for folder in combined-results/*; do
+            json_file=$(ls "$folder"/*.json)          # Only one JSON per runner
+            JSON_FILES="$JSON_FILES,$(basename "$json_file")"
+          done
+          JSON_FILES="${JSON_FILES#,}"                # Remove leading comma
+          echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
+          echo "✅ JSON files to pass to Python: $JSON_FILES"
+
+      # ---------------------------------------------------------------
+      # Step 4: Setup Python
       # ---------------------------------------------------------------
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # ---------------------------------------------------------------
+      # Step 5: Install Python dependencies
+      # ---------------------------------------------------------------
       - name: 📦 Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
 
       # ---------------------------------------------------------------
-      # Step 4: Run Python dashboard generator with all JSONs
+      # Step 6: Run Python dashboard generator
       # ---------------------------------------------------------------
       - name: 🧮 Generate Combined Dashboard
         shell: bash
         run: |
-          cd combined-results
+          # Copy YAML from the first runner folder for Python
+          cp combined-results/*/*.yml config.yml
           python ../generate_artillery_dashboard.py \
             --json "${{ steps.collect_jsons.outputs.json_files }}" \
-            --yaml "${{ github.event.inputs.script_file }}" \
+            --yaml config.yml \
             --output "../merged-dashboard.html"
           echo "✅ Merged dashboard generated: merged-dashboard.html"
-          cd ..
 
       # ---------------------------------------------------------------
-      # Step 5: Upload merged dashboard as artifact
+      # Step 7: Upload merged dashboard as artifact
       # ---------------------------------------------------------------
       - name: 📤 Upload Combined Dashboard
         uses: actions/upload-artifact@v4
