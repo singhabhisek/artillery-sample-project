@@ -115,7 +115,7 @@ jobs:
           echo "🧪 Running test: $RESULT_JSON"
 
           # Run Artillery with environment variables from secrets
-          ARTILLERY_TARGET="${{ vars.ARTILLERY_TARGET }}" \
+          ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
