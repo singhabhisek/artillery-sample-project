@@ -153,31 +153,55 @@ jobs:
   # =========================================================
   # 2️⃣ Aggregate reports (runs after all runners complete)
   # =========================================================
-  aggregate-reports:
+    aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
     needs: run-artillery
     runs-on: ubuntu-latest
 
     steps:
-      # ---------------------------------------------------------------
-      # Step 0: Checkout repository so Python script is available
-      # ---------------------------------------------------------------
+      # Step 0: Checkout repository
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # ---------------------------------------------------------------
-      # Step 1: Download all runner artifacts
+      # Debug: Print workspace and scripts folder locations
       # ---------------------------------------------------------------
+      - name: 🔍 Debug Workspace & Scripts
+        shell: bash
+        run: |
+          echo "===== Workspace Details ====="
+          echo "Current directory: $(pwd)"
+          echo "All files recursively:"
+          ls -R
+          echo "Contents of scripts folder:"
+          ls -R ./scripts || echo "Scripts folder not found!"
+          echo "Checking if Python dashboard script exists:"
+          if [ -f "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" ]; then
+            echo "✅ Python script found: generate_artillery_dashboard.py"
+          else
+            echo "❌ Python script not found!"
+          fi
+          echo "=============================="
+
+      # Step 1: Download all runner artifacts
       - name: 📥 Download All Artifacts
         uses: actions/download-artifact@v4
         with:
           path: artillery-results
 
       # ---------------------------------------------------------------
-      # Step 2: Extract ZIPs into combined-results folder
+      # Debug: List downloaded artifacts
       # ---------------------------------------------------------------
+      - name: 📂 List Downloaded Artifacts
+        shell: bash
+        run: |
+          echo "Downloaded artifact files:"
+          find artillery-results -type f
+          echo "=============================="
+
+      # Step 2: Extract ZIPs into combined-results folder
       - name: 🧩 Extract ZIPs
         shell: bash
         run: |
@@ -191,49 +215,60 @@ jobs:
           echo "✅ Extracted all runner ZIPs into unique subfolders."
 
       # ---------------------------------------------------------------
-      # Step 3: Collect all result JSON filenames (comma-separated)
+      # Debug: List combined-results contents
       # ---------------------------------------------------------------
+      - name: 📂 List Combined Results
+        shell: bash
+        run: |
+          echo "Contents of combined-results folder:"
+          find combined-results -type f
+          echo "=============================="
+
+      # Step 3: Collect all result JSON filenames (comma-separated)
       - name: 📝 Collect JSON filenames
         id: collect_jsons
         shell: bash
         run: |
           JSON_FILES=$(find combined-results -name '*.json' -type f | xargs -n1 basename | paste -sd "," -)
+          if [ -z "$JSON_FILES" ]; then
+            echo "⚠️ No result JSON files found! Skipping Python dashboard generation."
+            echo "json_files=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
           echo "✅ Collected JSON files: $JSON_FILES"
 
-      # ---------------------------------------------------------------
-      # Step 4: Setup Python for dashboard generation
-      # ---------------------------------------------------------------
+      # Step 4: Setup Python
       - name: 🐍 Setup Python
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ---------------------------------------------------------------
       # Step 5: Install Python dependencies
-      # ---------------------------------------------------------------
       - name: 📦 Install Python Dependencies
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
 
-      # ---------------------------------------------------------------
       # Step 6: Generate merged HTML dashboard using Python
-      # ---------------------------------------------------------------
       - name: 🧮 Generate Combined Dashboard
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         shell: bash
         run: |
           SCENARIO_FILE="${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
-          python "${{ github.workspace }}/generate_artillery_dashboard.py" \
+          echo "Using scenario YAML: $SCENARIO_FILE"
+          echo "Running Python script from: ${GITHUB_WORKSPACE}/generate_artillery_dashboard.py"
+          python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
             --json "${{ steps.collect_jsons.outputs.json_files }}" \
             --yaml "$SCENARIO_FILE" \
             --output "merged-dashboard.html"
           echo "✅ Merged dashboard generated: merged-dashboard.html"
 
-      # ---------------------------------------------------------------
       # Step 7: Upload merged dashboard
-      # ---------------------------------------------------------------
       - name: 📤 Upload Combined Dashboard
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: merged-artillery-dashboard
