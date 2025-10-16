@@ -214,7 +214,7 @@ jobs:
         shell: bash
         run: |
           SCENARIO_FILE="${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
-          python generate_artillery_dashboard.py \
+          python "${{ github.workspace }}/generate_artillery_dashboard.py" \
             --json "${{ steps.collect_jsons.outputs.json_files }}" \
             --yaml "$SCENARIO_FILE" \
             --output "merged-dashboard.html"
