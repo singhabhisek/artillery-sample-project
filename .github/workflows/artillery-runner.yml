@@ -58,6 +58,14 @@ jobs:
 
     steps:
       # ---------------------------------------------------------------
+      # 🧾 Step 0: Checkout the repository so scripts/ folder is available
+      # ---------------------------------------------------------------
+      - name: 🧾 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full repo history and files
+          
+      # ---------------------------------------------------------------
       # Step 0: Skip unused runners gracefully (green, not red ❌)
       # ---------------------------------------------------------------
       - name: 🛑 Skip unused runner jobs
