@@ -35,24 +35,26 @@ env:
   REPORT_DIR: "./artillery-results"
 
 jobs:
+  # =========================================================
+  # 1️⃣ Run Artillery on Multiple Runners
+  # =========================================================
   run-artillery:
     name: Run Artillery - Runner ${{ matrix.runner_index }}
     runs-on: ubuntu-latest
 
-    # Strategy to allow 1–4 parallel runners
     strategy:
       fail-fast: false
       matrix:
-        runner_index: [1, 2, 3, 4]
+        runner_index: [1, 2, 3, 4]  # Up to 4 parallel runners
 
     steps:
       # ---------------------------------------------------------------
-      # Step 0: Checkout repository so scripts folder is available
+      # Step 0: Checkout repo so scripts folder is available
       # ---------------------------------------------------------------
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full repo to ensure all scripts are present
+          fetch-depth: 0
 
       # ---------------------------------------------------------------
       # Step 0.1: Skip unused runners gracefully
@@ -65,7 +67,7 @@ jobs:
           exit 0
 
       # ---------------------------------------------------------------
-      # Step 0.2: Check if the scenario YAML exists before proceeding
+      # Step 0.2: Check if scenario YAML exists before running test
       # ---------------------------------------------------------------
       - name: 🔍 Check scenario YAML exists
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
@@ -79,7 +81,7 @@ jobs:
           fi
 
       # ---------------------------------------------------------------
-      # Step 1: Setup Node.js (required for Artillery)
+      # Step 1: Setup Node.js
       # ---------------------------------------------------------------
       - name: 🧩 Setup Node.js
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
@@ -146,10 +148,10 @@ jobs:
         with:
           name: artillery-results-runner-${{ matrix.runner_index }}
           path: upload/*.zip
-        continue-on-error: true  # ensure upload attempts even if test partially failed
+        continue-on-error: true
 
   # =========================================================
-  # Aggregate reports (runs after all runners complete)
+  # 2️⃣ Aggregate reports (runs after all runners complete)
   # =========================================================
   aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -157,6 +159,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------------------------------------------------------
+      # Step 0: Checkout repository so Python script is available
+      # ---------------------------------------------------------------
+      - name: 🧾 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       # ---------------------------------------------------------------
       # Step 1: Download all runner artifacts
       # ---------------------------------------------------------------
