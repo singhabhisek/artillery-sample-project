@@ -153,7 +153,7 @@ jobs:
   # =========================================================
   # 2️⃣ Aggregate reports (runs after all runners complete)
   # =========================================================
-    aggregate-reports:
+  aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
     needs: run-artillery
     runs-on: ubuntu-latest
