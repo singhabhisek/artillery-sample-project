@@ -103,7 +103,7 @@ jobs:
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       # ---------------------------------------------------------------
       # Step 3: Install Artillery + plugin
@@ -150,7 +150,7 @@ jobs:
           echo "🧪 Running test: ${RESULT_JSON}"
 
           # Inject secrets into Artillery environment
-          ARTILLERY_TARGET="${{ secrets.BASE_URL }}" \
+          ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
