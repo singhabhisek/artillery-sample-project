@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       test_type:
-        description: "Choose test type (e.g., load/cleanup)"
+        description: "Choose test type (e.g., load/stress/cleanup)"
         required: true
         type: choice
         options:
@@ -12,7 +12,7 @@ on:
           - stress
           - cleanup
       environment:
-        description: "Environment to run test on (dev/stage/prod)"
+        description: "Environment to run test on (test/prod)"
         required: true
         type: choice
         options:
@@ -27,7 +27,7 @@ on:
           - '2'
           - '4'
       scenario_file:
-        description: "YAML file for Artillery test (e.g., cloudrun-loadtest.yml)"
+        description: "Artillery YAML scenario (e.g., cloudrun-loadtest.yml)"
         required: true
         default: "cloudrun-loadtest.yml"
       cleanup_days:
@@ -35,22 +35,24 @@ on:
         required: false
         default: "7"
 
-
+# =========================================================
+# 🌍 Global environment variables
+# =========================================================
 env:
   ARTILLERY_VERSION: "2.0.26"
   SCRIPTS_DIR: "./scripts"
   DATA_DIR: "./data"
   REPORT_DIR: "./artillery-results"
-  
+
 # =========================================================
-# 1️⃣ Job: Run Artillery on Multiple Runners in Parallel
+# 1️⃣ Job: Run Artillery across multiple runners in parallel
 # =========================================================
 jobs:
   run-artillery:
     name: Run Artillery - Runner ${{ matrix.runner_index }}
     runs-on: ubuntu-latest
 
-    # Define up to 4 parallel runners (we will conditionally skip extras)
+    # Up to 4 parallel runners (controlled by user input)
     strategy:
       fail-fast: false
       matrix:
@@ -58,15 +60,15 @@ jobs:
 
     steps:
       # ---------------------------------------------------------------
-      # 🧾 Step 0: Checkout the repository so scripts/ folder is available
+      # Step 0: Checkout the repository so ./scripts folder is available
       # ---------------------------------------------------------------
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full repo history and files
-          
+          fetch-depth: 0
+
       # ---------------------------------------------------------------
-      # Step 0: Skip unused runners gracefully (green, not red ❌)
+      # Step 1: Skip unused runners gracefully (✅ green instead of ❌)
       # ---------------------------------------------------------------
       - name: 🛑 Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJson(github.event.inputs.runners_to_use) }}
@@ -76,7 +78,52 @@ jobs:
           exit 0
 
       # ---------------------------------------------------------------
-      # Step 1: Print Runner Provisioning Details (system info)
+      # Step 2: Validate the scenario YAML exists before proceeding
+      # ---------------------------------------------------------------
+      - name: 🔍 Validate Scenario YAML Exists
+        if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          FILE_PATH="${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
+          echo "🔎 Checking for scenario file: $FILE_PATH"
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "❌ Scenario file not found at: $FILE_PATH"
+            echo "🛑 Please ensure the YAML file exists in the 'scripts/' folder."
+            exit 1
+          fi
+          echo "✅ Scenario file found."
+
+      # ---------------------------------------------------------------
+      # Step 3: Validate all required secrets and variables are present
+      # ---------------------------------------------------------------
+      - name: 🔐 Validate Required Secrets and Variables
+        if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          missing=false
+          echo "🔍 Validating required GitHub secrets and variables..."
+          if [ -z "${{ secrets.API_KEY }}" ]; then
+            echo "❌ Missing secret: API_KEY"; missing=true
+          else
+            echo "✅ Secret: API_KEY is set."
+          fi
+          if [ -z "${{ secrets.AUTH_HEADER }}" ]; then
+            echo "❌ Missing secret: AUTH_HEADER"; missing=true
+          else
+            echo "✅ Secret: AUTH_HEADER is set."
+          fi
+          if [ -z "${{ vars.BASE_URL }}" ]; then
+            echo "❌ Missing variable: BASE_URL"; missing=true
+          else
+            echo "✅ Variable: BASE_URL is set."
+          fi
+          if [ "$missing" = true ]; then
+            echo "🛑 One or more required secrets/variables are missing. Exiting."
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------
+      # Step 4: Print basic system information for debugging
       # ---------------------------------------------------------------
       - name: ℹ️ Print Runner Provisioning Details
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
@@ -91,15 +138,10 @@ jobs:
           MEM_GB=$(printf "%.2f" "$(echo "$MEM_KB / 1024 / 1024" | bc -l)")
           echo "Memory: ${MEM_GB} GB"
           echo "Public IP: $(curl -s api.ipify.org)"
-          CITY=$(echo "$LOCATION_INFO" | jq -r '.city')
-          REGION=$(echo "$LOCATION_INFO" | jq -r '.regionName')
-          COUNTRY=$(echo "$LOCATION_INFO" | jq -r '.country')
-          echo "Public IP: $PUBLIC_IP"
-          echo "Location: $CITY, $REGION, $COUNTRY"
           echo "===================================================="
 
       # ---------------------------------------------------------------
-      # Step 2: Setup Node.js (needed for Artillery)
+      # Step 5: Setup Node.js (required for Artillery)
       # ---------------------------------------------------------------
       - name: 🧩 Setup Node.js
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
@@ -108,7 +150,7 @@ jobs:
           node-version: "20"
 
       # ---------------------------------------------------------------
-      # Step 3: Install Artillery
+      # Step 6: Install Artillery and its plugin
       # ---------------------------------------------------------------
       - name: ⚙️ Install Artillery + Plugin
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
@@ -116,7 +158,10 @@ jobs:
           npm install -g artillery@${{ env.ARTILLERY_VERSION }}
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
-      
+
+      # ---------------------------------------------------------------
+      # Step 7: List workspace contents (for debug only)
+      # ---------------------------------------------------------------
       - name: 🧪 Debug List workspace & scripts folder
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -128,7 +173,7 @@ jobs:
           ls -R ./scripts || echo "scripts folder not found!"
 
       # ---------------------------------------------------------------
-      # Step 4: Run the test and create unique JSON + HTML result names
+      # Step 8: Run Artillery test with unique result names
       # ---------------------------------------------------------------
       - name: 🚀 Run Artillery Test
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
@@ -148,13 +193,13 @@ jobs:
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
           --output "artillery-results/${RESULT_JSON}" --quiet
-          npx artillery report "artillery-results/${RESULT_JSON}" --output "artillery-results/$REPORT_HTML"
-          
+
+          npx artillery report "artillery-results/${RESULT_JSON}" --output "artillery-results/${RESULT_HTML}"
           echo "result_json=${RESULT_JSON}" >> $GITHUB_OUTPUT
           echo "result_html=${RESULT_HTML}" >> $GITHUB_OUTPUT
 
       # ---------------------------------------------------------------
-      # Step 5: Package test results into a ZIP per runner
+      # Step 9: Package test results into a ZIP per runner
       # ---------------------------------------------------------------
       - name: 📦 Package Artillery Results
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
@@ -166,7 +211,7 @@ jobs:
           echo "Packaged ZIP: upload/${ZIP_NAME}"
 
       # ---------------------------------------------------------------
-      # Step 6: Upload the ZIP as an artifact
+      # Step 10: Upload the ZIP as an artifact
       # ---------------------------------------------------------------
       - name: 📤 Upload Artillery Results
         if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
@@ -176,7 +221,7 @@ jobs:
           path: upload/*.zip
 
 # =========================================================
-# 2️⃣ Job: Aggregate All Runner Reports (runs after all above)
+# 2️⃣ Job: Aggregate All Runner Reports (post-processing)
 # =========================================================
   aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -185,17 +230,11 @@ jobs:
     environment: ${{ github.event.inputs.environment }}
 
     steps:
-      # ---------------------------------------------------------------
-      # Step 1: Download all Artifacts
-      # ---------------------------------------------------------------
       - name: 📥 Download All Artifacts
         uses: actions/download-artifact@v4
         with:
           path: artillery-results
 
-      # ---------------------------------------------------------------
-      # Step 2: Extract all ZIPs into separate folders (no overwrite)
-      # ---------------------------------------------------------------
       - name: 🧩 Extract ZIPs per runner
         id: extract
         shell: bash
@@ -208,9 +247,6 @@ jobs:
           done
           echo "✅ Extracted all runner ZIPs into unique subfolders."
 
-      # ---------------------------------------------------------------
-      # Step 3: Collect all JSON filenames for Python (comma-separated)
-      # ---------------------------------------------------------------
       - name: 📝 Collect JSON filenames for Python
         id: collect_jsons
         shell: bash
@@ -226,42 +262,26 @@ jobs:
           echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
           echo "✅ JSON files to pass: $JSON_FILES"
 
-      # ---------------------------------------------------------------
-      # Step 4: Setup Python
-      # ---------------------------------------------------------------
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ---------------------------------------------------------------
-      # Step 5: Install Python dependencies
-      # ---------------------------------------------------------------
       - name: 📦 Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
 
-      # ---------------------------------------------------------------
-      # Step 6: Run Python Dashboard Generator
-      # ---------------------------------------------------------------
       - name: 🧮 Generate Combined Dashboard
         shell: bash
         run: |
-          # Copy YAML file from first runner folder
           cp combined-results/*/*.yml config.yml
-
-          # Call Python script with comma-separated JSONs
           python ../generate_artillery_dashboard.py \
             --json "${{ steps.collect_jsons.outputs.json_files }}" \
             --yaml config.yml \
             --output "../merged-dashboard.html"
-
           echo "✅ Merged dashboard generated: merged-dashboard.html"
 
-      # ---------------------------------------------------------------
-      # Step 7: Upload Combined Dashboard
-      # ---------------------------------------------------------------
       - name: 📤 Upload Combined Dashboard
         uses: actions/upload-artifact@v4
         with:
