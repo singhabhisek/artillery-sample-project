@@ -108,6 +108,16 @@ jobs:
           npm install -g artillery@${{ env.ARTILLERY_VERSION }}
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
+      
+      - name: 🧪 Debug List workspace & scripts folder
+        if: ${{ matrix.runner_index <= fromJson(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          echo "Working directory: $(pwd)"
+          echo "All files in workspace:"
+          ls -R .
+          echo "Contents of ./scripts folder:"
+          ls -R ./scripts || echo "scripts folder not found!"
 
       # ---------------------------------------------------------------
       # Step 4: Run the test and create unique JSON + HTML result names
