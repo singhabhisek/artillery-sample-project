@@ -191,7 +191,7 @@ jobs:
         run: |
           RUNNER_HTML="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-dashboard.html"
           python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
-            --json "${{ steps.run_test.outputs.result_json }}" \
+            --json "${{ env.REPORT_DIR }}/${{ steps.run_test.outputs.result_json }}" \
             --yaml "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
             --output "$RUNNER_HTML"
           echo "Generated Python dashboard for runner ${{ matrix.runner_index }}: $RUNNER_HTML"
