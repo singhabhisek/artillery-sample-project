@@ -87,9 +87,8 @@ jobs:
       # ---------------------------------------------------------------
       - name: Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
-        continue-on-error: true
         run: |
-          echo "Skipping runner ${{ matrix.runner_index }} (not needed based on input)"
+          echo "Skipping runner ${{ matrix.runner_index }}"
           exit 0
 
       # ---------------------------------------------------------------
