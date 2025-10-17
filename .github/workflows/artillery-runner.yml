@@ -121,6 +121,7 @@ jobs:
             exit 1
           else
             echo "Found scenario file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
+          fi
 
       # ---------------------------------------------------------------
       # Step 5: Setup Node.js for Artillery
