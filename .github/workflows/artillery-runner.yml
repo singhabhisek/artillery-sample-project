@@ -45,38 +45,43 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner_index: [1, 2, 3, 4]  # Up to 4 parallel runners
+        runner_index: [1, 2, 3, 4]
 
     steps:
+      # Checkout the repo so scripts and YAML exist
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Skip unused runners
       - name: 🛑 Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
         continue-on-error: true
         run: |
-          echo "Skipping runner ${{ matrix.runner_index }} (limit = ${{ github.event.inputs.runners_to_use }})"
+          echo "Skipping runner ${{ matrix.runner_index }}"
           exit 0
 
+      # Ensure scenario YAML exists
       - name: 🔍 Check scenario YAML exists
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
         run: |
           if [ ! -f "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" ]; then
-            echo "❌ Scenario file '${{ github.event.inputs.scenario_file }}' not found in scripts folder."
+            echo "❌ Scenario file not found"
             exit 1
           else
-            echo "✅ Found scenario file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
+            echo "✅ Found scenario file"
           fi
 
+      # Setup Node.js for Artillery
       - name: 🧩 Setup Node.js
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+      # Install Artillery and plugin
       - name: ⚙️ Install Artillery + Plugin
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
@@ -84,6 +89,7 @@ jobs:
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
 
+      # Run Artillery and generate JSON + HTML
       - name: 🚀 Run Artillery Test
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         id: run_test
@@ -109,6 +115,7 @@ jobs:
           echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT
           echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
 
+      # Package runner results
       - name: 📦 Package Artillery Results
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
@@ -117,6 +124,7 @@ jobs:
           zip -r "upload/$ZIP_NAME" "${{ env.REPORT_DIR }}/$RESULT_JSON" "${{ env.REPORT_DIR }}/logs" || true
           echo "Packaged ZIP: upload/$ZIP_NAME"
 
+      # Upload runner ZIP
       - name: 📤 Upload Artillery Results
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/upload-artifact@v4
@@ -126,7 +134,7 @@ jobs:
         continue-on-error: true
 
   # =========================================================
-  # 2️⃣ Aggregate reports (runs after all runners complete)
+  # 2️⃣ Aggregate reports and generate consolidated ZIP
   # =========================================================
   aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -139,34 +147,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Debug workspace
       - name: 🔍 Debug Workspace & Scripts
         shell: bash
         run: |
-          echo "===== Workspace Details ====="
           echo "Current directory: $(pwd)"
-          echo "All files recursively:"
           ls -R
-          echo "Contents of scripts folder:"
-          ls -R ./scripts || echo "Scripts folder not found!"
-          echo "Checking if Python dashboard script exists:"
+          ls -R ./scripts || echo "Scripts folder not found"
           if [ -f "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" ]; then
-            echo "✅ Python script found: generate_artillery_dashboard.py"
+            echo "✅ Python dashboard script found"
           else
-            echo "❌ Python script not found!"
+            echo "❌ Python dashboard script not found"
           fi
-          echo "=============================="
 
+      # Download runner artifacts
       - name: 📥 Download All Artifacts
         uses: actions/download-artifact@v4
         with:
           path: artillery-results
-
-      - name: 📂 List Downloaded Artifacts
-        shell: bash
-        run: |
-          echo "Downloaded artifact files:"
-          find artillery-results -type f
-          echo "=============================="
 
       - name: 🧩 Extract ZIPs
         shell: bash
@@ -178,55 +176,45 @@ jobs:
             mkdir -p combined-results/"$foldername"
             unzip -o "$zipfile" -d combined-results/"$foldername" > /dev/null
           done
-          echo "✅ Extracted all runner ZIPs into unique subfolders."
 
-      - name: 📂 List Combined Results
-        shell: bash
-        run: |
-          echo "Contents of combined-results folder:"
-          find combined-results -type f
-          echo "=============================="
-
+      # Collect JSONs
       - name: 📝 Collect JSON filenames
         id: collect_jsons
         shell: bash
         run: |
-          # Use full relative paths, not just basenames
           JSON_FILES=$(find combined-results -name '*.json' -type f | paste -sd "," -)
           if [ -z "$JSON_FILES" ]; then
-            echo "⚠️ No result JSON files found! Skipping Python dashboard generation."
+            echo "⚠️ No JSON files found!"
             echo "json_files=" >> $GITHUB_OUTPUT
             exit 0
           fi
           echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
-          echo "✅ Collected JSON files: $JSON_FILES"
-          echo "Debug list of JSONs:"
           echo "$JSON_FILES" | tr ',' '\n'
 
+      # Setup Python
       - name: 🐍 Setup Python
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # Install Python dependencies
       - name: 📦 Install Python Dependencies
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
 
+      # Generate merged HTML dashboard
       - name: 🧮 Generate Combined Dashboard
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         shell: bash
         run: |
           SCENARIO_FILE="${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
-          echo "Using scenario YAML: $SCENARIO_FILE"
-          echo "Running Python script from: ${GITHUB_WORKSPACE}/generate_artillery_dashboard.py"
           python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
             --json "${{ steps.collect_jsons.outputs.json_files }}" \
             --yaml "$SCENARIO_FILE" \
             --output "merged-dashboard.html"
-          echo "✅ Merged dashboard generated: merged-dashboard.html"
 
       - name: 📤 Upload Combined Dashboard
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
@@ -234,3 +222,24 @@ jobs:
         with:
           name: merged-artillery-dashboard
           path: merged-dashboard.html
+
+      # Create consolidated ZIP (all runner ZIPs + dashboard)
+      - name: 📦 Create Consolidated Report ZIP
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
+        shell: bash
+        run: |
+          mkdir -p final-report
+          cp artillery-results/**/*.zip final-report/ || true
+          cp merged-dashboard.html final-report/ || true
+          CONSOLIDATED_ZIP="artillery-final-report.zip"
+          cd final-report
+          zip -r "../$CONSOLIDATED_ZIP" ./*
+          cd ..
+          echo "✅ Consolidated ZIP created: $CONSOLIDATED_ZIP"
+
+      - name: 📤 Upload Consolidated Report
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: artillery-final-report
+          path: artillery-final-report.zip
