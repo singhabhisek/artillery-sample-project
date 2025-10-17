@@ -339,30 +339,32 @@ else:
         Tries exact match first; if not found, removes trailing slashes and matches base domain.
         Debug prints added to see why matching fails.
         """
-        print(f"\nLooking up SLA for endpoint: '{ep_name}'")
+        #print(f"\nLooking up SLA for endpoint: '{ep_name}'")
 
         # Exact match
         if ep_name in sla_dict:
-            print(f"Exact match found: {ep_name} -> {sla_dict[ep_name]}")
+            #print(f"Exact match found: {ep_name} -> {sla_dict[ep_name]}")
             return sla_dict[ep_name]
         
         # Try matching without trailing slashes
         ep_base = ep_name.rstrip("/")
         for k in sla_dict:
             k_base = k.rstrip("/")
-            print(f"Comparing '{ep_base}' with SLA key '{k_base}'")
+            #print(f"Comparing '{ep_base}' with SLA key '{k_base}'")
             if k_base == ep_base:
-                print(f"Match found: {k} -> {sla_dict[k]}")
+                #print(f"Match found: {k} -> {sla_dict[k]}")
                 return sla_dict[k]
         
         # Fallback to defaults
-        print(f"No match found for '{ep_name}', using defaults: SLA={default_sla}, TPH={default_tph}")
+        #print(f"No match found for '{ep_name}', using defaults: SLA={default_sla}, TPH={default_tph}")
         return [default_sla, default_tph]
 
     
     DEFAULT_SLA = 500  # ms
     DEFAULT_TPH = 0    # transactions per hour
     
+    # Determine if SLA JSON is actually provided and loaded
+    SLA_ENABLED = bool(sla_data)
     
     # ---------------- SUMMARY TABLE ----------------
     summary_rows = []
@@ -371,19 +373,15 @@ else:
         pass_count = sum(ep_pass_counts[ep])
         fail_count = total - pass_count
         agg_summary = agg_summaries.get(f"plugins.metrics-by-endpoint.response_time.{ep}",{})
-        # Get SLA and Expected_TPH from SLA JSON if present
-        sla_val, tph_val = get_sla_for_endpoint(ep, sla_data, DEFAULT_SLA, DEFAULT_TPH)
-
+    
         row = {
             "Transaction": ep,
-            "SLA(ms)": sla_val,
             "Avg (ms)": round(agg_summary.get("mean", 0), 2),
             "Min (ms)": agg_summary.get("min", 0),
             "Max (ms)": agg_summary.get("max", 0),
             "P90": agg_summary.get("p90", 0),
             "P95": agg_summary.get("p95", 0),
             "P99(ms)": agg_summary.get("p99", 0),
-            "Expected_TPH": tph_val,
             "Count": total,
             "Pass_Count": pass_count,
             "Fail_Count": fail_count
@@ -392,8 +390,27 @@ else:
             if p.lower() == "p99":
                 continue  # already added as "P99(ms)"
             row[p.upper()] = agg_summary.get(p,0)
+            
+        # Only add SLA columns if SLA JSON was provided
+        if SLA_ENABLED:
+            sla_val, tph_val = get_sla_for_endpoint(ep, sla_data, DEFAULT_SLA, DEFAULT_TPH)
+            row["SLA(ms)"] = sla_val
+            row["Expected_TPH"] = tph_val
+
         summary_rows.append(row)
-    summary_df = pd.DataFrame(summary_rows).sort_values(by="Transaction")
+
+    # Decide column order dynamically
+    columns = ["Transaction"]
+    if SLA_ENABLED:
+        columns += ["SLA(ms)"]
+    columns += ["Avg (ms)", "Min (ms)", "Max (ms)", "P90", "P95", "P99(ms)"]
+    if SLA_ENABLED:
+        columns += ["Expected_TPH"]
+    columns += ["Count", "Pass_Count", "Fail_Count"]
+
+    summary_df = pd.DataFrame(summary_rows, columns=columns).sort_values(by="Transaction")
+    
+    #summary_df = pd.DataFrame(summary_rows).sort_values(by="Transaction")
 
     # ---------------- ERROR TABLE ----------------
     error_rows,error_agg=[],defaultdict(int)
