@@ -48,17 +48,11 @@ jobs:
         runner_index: [1, 2, 3, 4]  # Up to 4 parallel runners
 
     steps:
-      # ---------------------------------------------------------------
-      # Step 0: Checkout repo so scripts folder is available
-      # ---------------------------------------------------------------
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ---------------------------------------------------------------
-      # Step 0.1: Skip unused runners gracefully
-      # ---------------------------------------------------------------
       - name: 🛑 Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
         continue-on-error: true
@@ -66,9 +60,6 @@ jobs:
           echo "Skipping runner ${{ matrix.runner_index }} (limit = ${{ github.event.inputs.runners_to_use }})"
           exit 0
 
-      # ---------------------------------------------------------------
-      # Step 0.2: Check if scenario YAML exists before running test
-      # ---------------------------------------------------------------
       - name: 🔍 Check scenario YAML exists
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -80,18 +71,12 @@ jobs:
             echo "✅ Found scenario file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
           fi
 
-      # ---------------------------------------------------------------
-      # Step 1: Setup Node.js
-      # ---------------------------------------------------------------
       - name: 🧩 Setup Node.js
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # ---------------------------------------------------------------
-      # Step 2: Install Artillery + plugin
-      # ---------------------------------------------------------------
       - name: ⚙️ Install Artillery + Plugin
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
@@ -99,9 +84,6 @@ jobs:
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
 
-      # ---------------------------------------------------------------
-      # Step 3: Run Artillery test and generate result JSON
-      # ---------------------------------------------------------------
       - name: 🚀 Run Artillery Test
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         id: run_test
@@ -116,7 +98,6 @@ jobs:
 
           echo "🧪 Running test: $RESULT_JSON"
 
-          # Run Artillery with environment variables from secrets
           ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
@@ -128,9 +109,6 @@ jobs:
           echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT
           echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
 
-      # ---------------------------------------------------------------
-      # Step 4: Package results (JSON + logs) into ZIP per runner
-      # ---------------------------------------------------------------
       - name: 📦 Package Artillery Results
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
@@ -139,9 +117,6 @@ jobs:
           zip -r "upload/$ZIP_NAME" "${{ env.REPORT_DIR }}/$RESULT_JSON" "${{ env.REPORT_DIR }}/logs" || true
           echo "Packaged ZIP: upload/$ZIP_NAME"
 
-      # ---------------------------------------------------------------
-      # Step 5: Upload runner ZIP artifact
-      # ---------------------------------------------------------------
       - name: 📤 Upload Artillery Results
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/upload-artifact@v4
@@ -159,15 +134,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 0: Checkout repository
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ---------------------------------------------------------------
-      # Debug: Print workspace and scripts folder locations
-      # ---------------------------------------------------------------
       - name: 🔍 Debug Workspace & Scripts
         shell: bash
         run: |
@@ -185,15 +156,11 @@ jobs:
           fi
           echo "=============================="
 
-      # Step 1: Download all runner artifacts
       - name: 📥 Download All Artifacts
         uses: actions/download-artifact@v4
         with:
           path: artillery-results
 
-      # ---------------------------------------------------------------
-      # Debug: List downloaded artifacts
-      # ---------------------------------------------------------------
       - name: 📂 List Downloaded Artifacts
         shell: bash
         run: |
@@ -201,7 +168,6 @@ jobs:
           find artillery-results -type f
           echo "=============================="
 
-      # Step 2: Extract ZIPs into combined-results folder
       - name: 🧩 Extract ZIPs
         shell: bash
         run: |
@@ -214,9 +180,6 @@ jobs:
           done
           echo "✅ Extracted all runner ZIPs into unique subfolders."
 
-      # ---------------------------------------------------------------
-      # Debug: List combined-results contents
-      # ---------------------------------------------------------------
       - name: 📂 List Combined Results
         shell: bash
         run: |
@@ -224,12 +187,12 @@ jobs:
           find combined-results -type f
           echo "=============================="
 
-      # Step 3: Collect all result JSON filenames (comma-separated)
       - name: 📝 Collect JSON filenames
         id: collect_jsons
         shell: bash
         run: |
-          JSON_FILES=$(find combined-results -name '*.json' -type f | xargs -n1 basename | paste -sd "," -)
+          # Use full relative paths, not just basenames
+          JSON_FILES=$(find combined-results -name '*.json' -type f | paste -sd "," -)
           if [ -z "$JSON_FILES" ]; then
             echo "⚠️ No result JSON files found! Skipping Python dashboard generation."
             echo "json_files=" >> $GITHUB_OUTPUT
@@ -237,22 +200,21 @@ jobs:
           fi
           echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
           echo "✅ Collected JSON files: $JSON_FILES"
+          echo "Debug list of JSONs:"
+          echo "$JSON_FILES" | tr ',' '\n'
 
-      # Step 4: Setup Python
       - name: 🐍 Setup Python
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # Step 5: Install Python dependencies
       - name: 📦 Install Python Dependencies
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
 
-      # Step 6: Generate merged HTML dashboard using Python
       - name: 🧮 Generate Combined Dashboard
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         shell: bash
@@ -266,7 +228,6 @@ jobs:
             --output "merged-dashboard.html"
           echo "✅ Merged dashboard generated: merged-dashboard.html"
 
-      # Step 7: Upload merged dashboard
       - name: 📤 Upload Combined Dashboard
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/upload-artifact@v4
