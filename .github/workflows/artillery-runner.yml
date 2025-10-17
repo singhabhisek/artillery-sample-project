@@ -158,6 +158,24 @@ jobs:
           echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
 
       # ---------------------------------------------------------------
+      # Step 3.1: Setup Python for runner dashboards
+      # ---------------------------------------------------------------
+      - name: Setup Python
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      
+      # ---------------------------------------------------------------
+      # Step 3.2: Install Python dependencies
+      # ---------------------------------------------------------------
+      - name: Install Python Dependencies
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas plotly numpy pyyaml
+    
+      # ---------------------------------------------------------------
       # Step 5: Generate runner-specific Python dashboard
       # ---------------------------------------------------------------
       - name: Generate Python dashboard for this runner
@@ -260,7 +278,6 @@ jobs:
 
       # Install Python dependencies
       - name: Install Python Dependencies
-        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
