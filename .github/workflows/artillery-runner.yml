@@ -1,4 +1,4 @@
-name: "Artillery Load Test (Multi-Runner) - ${{ github.event.inputs.test_name != '' && github.event.inputs.test_name }}"
+name: "Artillery Load Test (Multi-Runner)"
 
 on:
   workflow_dispatch:
