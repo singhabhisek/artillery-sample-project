@@ -1,4 +1,4 @@
-name: Artillery Load Test (Multi-Runner)
+name: "Artillery Load Test (Multi-Runner) - ${{ github.event.inputs.test_name != '' && github.event.inputs.test_name || 'Default-' + format('{0,date,yyyyMMdd}', github.event.head_commit.timestamp) }}"
 
 on:
   workflow_dispatch:
