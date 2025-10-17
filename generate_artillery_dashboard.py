@@ -36,24 +36,74 @@ FILTER_END_SEC = None
 parser = argparse.ArgumentParser(description="Merge up to 3 Artillery JSON reports into one HTML dashboard.")
 parser.add_argument("--json", required=True, help="Comma-separated list of Artillery JSON report files.")
 parser.add_argument("--yaml", required=False, help="Path to Artillery YAML config file.")
+parser.add_argument("--sla",type=str,default=None,help="Optional SLA JSON file defining transaction SLA (ms) and Expected_TPH per transaction" )
 parser.add_argument("--output", required=True, help="Output HTML file path.")
 
-# --- MODIFICATION START ---
-# Replace the entire try...except block with a straightforward call.
-# In a CI/CD environment, if arguments are missing, we want argparse to exit with
-# a non-zero code, failing the workflow step immediately.
-args = parser.parse_args()
-# --- MODIFICATION END ---
+# Handle argument parsing safely in case of interactive testing
+try:
+    args = parser.parse_args()
+except SystemExit:
+    # If no arguments are provided and the script exits, provide a helpful message
+    print("\nError: Arguments not provided. Run from command line like:")
+    print("python gen_art_dash_multi.py --json report1.json,report2.json --output report.html")
+    sys.exit(1)
+except:
+    # Minimal dummy arguments for demonstration if parsing fails mysteriously
+    class DummyArgs:
+        json = "dummy.json"
+        yaml = None
+        output = "output.html"
+    args = DummyArgs()
     
 # Check if dummy data generation is needed only if files were NOT specified
-# NOTE: The dummy logic that relied on 'args.json == "dummy.json"' is now effectively
-# removed since the try/except that created 'DummyArgs' is gone.
-# We simplify the input processing to rely only on the parsed arguments.
-INPUT_JSONS = [p.strip() for p in args.json.split(",") if p.strip()]
+if args.json == "dummy.json":
+    INPUT_JSONS = []
+else:
+    INPUT_JSONS = [p.strip() for p in args.json.split(",") if p.strip()]
+
+# ---------------- VALIDATE JSON FILES EXISTENCE ----------------
+existing_files = [f for f in INPUT_JSONS if Path(f).exists()]
+missing_files = [f for f in INPUT_JSONS if not Path(f).exists()]
+
+# Fail only if none of the provided JSON files exist
+if not existing_files:
+    print("❌ Error: None of the provided JSON files exist.")
+    for f in missing_files:
+        print(f"   - {f}")
+    sys.exit(1)
+
+# Warn and continue if some are missing
+if missing_files:
+    print("⚠️ Warning: Some JSON files were not found and will be skipped:")
+    for f in missing_files:
+        print(f"   - {f}")
+
+print("✅ Proceeding with existing JSON files:")
+for f in existing_files:
+    print(f"   - {f}")
+
+# Update the list to only include existing files
+INPUT_JSONS = existing_files
 
 INPUT_YAML = args.yaml
 OUTPUT_HTML = args.output
 
+# ---------------- LOAD SLA JSON (Optional) ----------------
+INPUT_SLA = args.sla
+sla_data = {}
+
+if INPUT_SLA:
+    if not Path(INPUT_SLA).exists():
+        print(f"⚠️ Warning: SLA file '{INPUT_SLA}' not found. Default SLA values will be used.")
+    else:
+        try:
+            with open(INPUT_SLA, "r") as f:
+                sla_data = json.load(f)
+            print(f"✅ Loaded SLA definitions from {INPUT_SLA}")
+        except json.JSONDecodeError:
+            print(f"⚠️ Warning: SLA file '{INPUT_SLA}' is not valid JSON. Using defaults.")
+            sla_data = {}
+            
 # --- PHASE SHAPE OVERRIDE based on YAML presence ---
 # If a YAML file path was NOT provided, force the phase flag OFF.
 if not INPUT_YAML:
@@ -97,13 +147,10 @@ intermediate = all_intermediate
 
 # --- Dummy Data Generation if no real data is loaded ---
 if not intermediate:
-    # We now rely on the check if any file existed, and proceed to dummy data if none did.
-    if INPUT_JSONS and any(Path(f).exists() for f in INPUT_JSONS):
-         # If files were specified and at least one existed, but no intermediate data was loaded,
-         # we fail the script cleanly.
-         raise SystemExit("❌ No valid data found in provided JSON files (files exist but content is empty/invalid).")
+    if INPUT_JSONS and INPUT_JSONS[0]:
+        if any(Path(f).exists() for f in INPUT_JSONS):
+             raise SystemExit("❌ No valid data found in provided JSON files.")
     
-    # If no valid data or no files were provided, generate minimal dummy data for structure.
     print("❌ No valid data found. Generating minimal dummy data for structure.")
     now = datetime.now()
     time_points = [now]
@@ -115,22 +162,33 @@ if not intermediate:
     overall_avg = [50] 
     donut_labels = []
     donut_values = []
-    
-    # Initialize necessary components for dummy data generation
-    ep_counts = {"test_endpoint": [10]}
-    
     per_ep_data = {}
     total_duration = 60
     # Use ISO format for phases_data
     phases_data=[{"name":"Default Phase","duration":total_duration,"arrival":0, "start_dt": now.isoformat(timespec='seconds'), "end_dt": (now + timedelta(seconds=total_duration)).isoformat(timespec='seconds'), "start_sec": 0, "end_sec": total_duration}]
     total_tx = 0
-    summary_df = pd.DataFrame([{"Transaction":"test_endpoint","Count":0,"Pass Count":0,"Fail Count":0,"Avg (ms)":0,"Min (ms)":0,"Max (ms)":0,"P90":0,"P95":0,"P99":0}])
+    if not intermediate:
+        summary_df = pd.DataFrame([{
+            "Transaction": "test_endpoint",
+            "SLA(ms)": DEFAULT_SLA,
+            "Avg (ms)": 0,
+            "Min (ms)": 0,
+            "Max (ms)": 0,
+            "P90": 0,
+            "P95": 0,
+            "P99(ms)": 0,
+            "Expected_TPH": DEFAULT_TPH,
+            "Count": 0,
+            "Pass_Count": 0,
+            "Fail_Count": 0
+        }])
     error_df = pd.DataFrame()
     
     ep_p90 = {"test_endpoint": [90]}
     ep_avg = {"test_endpoint": [45]}
     ep_rps = {"test_endpoint": [1]}
     overall_pass_rps = [1]
+    
     
     js_PER_EP = json.dumps({})
     js_OVERALL_RPS = json.dumps({"x": x_labels, "y": overall_rps, "ep_data": ep_rps}) 
@@ -141,6 +199,9 @@ if not intermediate:
     js_DONUT = json.dumps({"labels": donut_labels, "values": donut_values})
     js_PHASES = json.dumps(phases_data)
     
+    #start_dt = time_points[0].isoformat(timespec='seconds')
+    #end_dt = time_points[0].isoformat(timespec='seconds')
+    #filtered_elapsed_seconds = [0]
     start_dt_obj = time_points[0] if time_points else datetime.now()
     end_dt_obj = time_points[-1] if time_points else datetime.now()
     
@@ -165,8 +226,7 @@ if not intermediate:
     # Prepare ISO strings for display
     start_dt = start_dt_obj.isoformat(timespec='seconds')
     end_dt = end_dt_obj.isoformat(timespec='seconds')
-    # Since ep_counts is dummy, use 0 for total_tx for dummy mode
-    total_tx = 0 
+    total_tx = sum(sum(ep_counts[ep]) for ep in endpoints)
     
     # Jumps to HTML generation
 else:
@@ -271,6 +331,39 @@ else:
     overall_p90 = [max(ep_pxx[ep]["p90"][i] for ep in endpoints) for i in range(len(time_points))]
     overall_avg = [max(ep_avg[ep][i] for ep in endpoints) for i in range(len(time_points))]
 
+    # ---------------- SUMMARY TABLE WITH SLA ----------------
+    
+    def get_sla_for_endpoint(ep_name, sla_dict, default_sla=500, default_tph=0):
+        """
+        Retrieve SLA and Expected_TPH for a given transaction/endpoint.
+        Tries exact match first; if not found, removes trailing slashes and matches base domain.
+        Debug prints added to see why matching fails.
+        """
+        print(f"\nLooking up SLA for endpoint: '{ep_name}'")
+
+        # Exact match
+        if ep_name in sla_dict:
+            print(f"Exact match found: {ep_name} -> {sla_dict[ep_name]}")
+            return sla_dict[ep_name]
+        
+        # Try matching without trailing slashes
+        ep_base = ep_name.rstrip("/")
+        for k in sla_dict:
+            k_base = k.rstrip("/")
+            print(f"Comparing '{ep_base}' with SLA key '{k_base}'")
+            if k_base == ep_base:
+                print(f"Match found: {k} -> {sla_dict[k]}")
+                return sla_dict[k]
+        
+        # Fallback to defaults
+        print(f"No match found for '{ep_name}', using defaults: SLA={default_sla}, TPH={default_tph}")
+        return [default_sla, default_tph]
+
+    
+    DEFAULT_SLA = 500  # ms
+    DEFAULT_TPH = 0    # transactions per hour
+    
+    
     # ---------------- SUMMARY TABLE ----------------
     summary_rows = []
     for ep in endpoints:
@@ -278,16 +371,26 @@ else:
         pass_count = sum(ep_pass_counts[ep])
         fail_count = total - pass_count
         agg_summary = agg_summaries.get(f"plugins.metrics-by-endpoint.response_time.{ep}",{})
+        # Get SLA and Expected_TPH from SLA JSON if present
+        sla_val, tph_val = get_sla_for_endpoint(ep, sla_data, DEFAULT_SLA, DEFAULT_TPH)
+
         row = {
-            "Transaction":ep,
-            "Count":total,
-            "Pass Count":pass_count,
-            "Fail Count":fail_count,
-            "Avg (ms)":round(agg_summary.get("mean",0),2),
-            "Min (ms)":agg_summary.get("min",0),
-            "Max (ms)":agg_summary.get("max",0)
+            "Transaction": ep,
+            "SLA(ms)": sla_val,
+            "Avg (ms)": round(agg_summary.get("mean", 0), 2),
+            "Min (ms)": agg_summary.get("min", 0),
+            "Max (ms)": agg_summary.get("max", 0),
+            "P90": agg_summary.get("p90", 0),
+            "P95": agg_summary.get("p95", 0),
+            "P99(ms)": agg_summary.get("p99", 0),
+            "Expected_TPH": tph_val,
+            "Count": total,
+            "Pass_Count": pass_count,
+            "Fail_Count": fail_count
         }
         for p in PERCENTILES:
+            if p.lower() == "p99":
+                continue  # already added as "P99(ms)"
             row[p.upper()] = agg_summary.get(p,0)
         summary_rows.append(row)
     summary_df = pd.DataFrame(summary_rows).sort_values(by="Transaction")
@@ -373,6 +476,9 @@ else:
     js_DONUT = json.dumps({"labels": donut_labels, "values": donut_values})
     js_PHASES = json.dumps(phases_data)
 
+    #start_dt = time_points[0].isoformat(timespec='seconds') if time_points else ""
+    #end_dt = time_points[-1].isoformat(timespec='seconds') if time_points else ""
+    #total_tx = sum(sum(ep_counts[ep]) for ep in endpoints)
     start_dt_obj = time_points[0] if time_points else datetime.now()
     end_dt_obj = time_points[-1] if time_points else datetime.now()
     
@@ -405,6 +511,7 @@ bootstrap = """
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.datatables.net/2.0.7/css/dataTables.bootstrap5.min.css" rel="stylesheet">
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
 <style>
 body{background:#f7f8fa;font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;padding:18px;}
 .card{margin-bottom:16px;border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,0.08);}
@@ -465,7 +572,7 @@ html = f"""<!doctype html><html><head><meta charset='utf-8'>
     <h5>📄 Summary</h5>
         <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
 
-{summary_df.to_html(classes="table table-striped table-bordered table-sm", index=False) if not summary_df.empty else "<div>No summary data available.</div>"}</div>
+{summary_df.to_html(classes="table table-striped table-bordered table-sm text-center", index=False, justify="center") if not summary_df.empty else "<div>No summary data available.</div>"}</div>
 </div></div>
 
 <div class='row'>
