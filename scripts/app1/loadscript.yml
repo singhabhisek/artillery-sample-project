@@ -52,33 +52,33 @@ config:
       X-Auth-Token: "{{ $processEnvironment.API_KEY }}"        # from GitHub Secret
       Authorization: "{{ $processEnvironment.AUTH_HEADER }}"   # from GitHub Secret
 
-  # 📊 CSV-based payloads for dynamic data
-  payload:
-    # Each virtual user gets one unique record from users.csv
-    - path: "../data/users.csv"
-      fields:
-        - "userId"
-        - "firstName"
-        - "lastName"
-        - "email"
-      order: sequence
+  # # 📊 CSV-based payloads for dynamic data
+  # payload:
+  #   # Each virtual user gets one unique record from users.csv
+  #   - path: "../data/users.csv"
+  #     fields:
+  #       - "userId"
+  #       - "firstName"
+  #       - "lastName"
+  #       - "email"
+  #     order: sequence
 
-    # Random order data (different per request)
-    - path: "../data/orders.csv"
-      fields:
-        - "productId"
-        - "quantity"
-        - "price"
-      order: random
+  #   # Random order data (different per request)
+  #   - path: "../data/orders.csv"
+  #     fields:
+  #       - "productId"
+  #       - "quantity"
+  #       - "price"
+  #     order: random
 
 # =====================================================================
 # 💡 Scenario: Simulate a complete microservice transaction
 # =====================================================================
 scenarios:
-  - name: "Confirm Data Load and Use"
-    flow:
-      # Use the 'log' action to print the variable value to the console/report
-      - log: "Starting scenario for User ID: {{ userId }} (Name: {{ firstName }})"
+  # - name: "Confirm Data Load and Use"
+  #   flow:
+  #     # Use the 'log' action to print the variable value to the console/report
+  #     - log: "Starting scenario for User ID: {{ userId }} (Name: {{ firstName }})"
       
   - name: "Random API"
     flow:
