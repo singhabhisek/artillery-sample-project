@@ -45,7 +45,7 @@ config:
 
 scenarios:
   - name: "post-orders"
-    weight: 10
+    weight: 15
     flow:
       - post:
           url: "https://orders-994656192388.us-central1.run.app/orders"
@@ -73,7 +73,7 @@ scenarios:
             statusCode: 200
 
   - name: "get-users"
-    weight: 40
+    weight: 80
     flow:
       - get:
           url: "https://users-nafj7uberq-uc.a.run.app"
@@ -89,7 +89,7 @@ scenarios:
             statusCode: 200
 
   - name: "get-recommendations"
-    weight: 10
+    weight: 100
     flow:
       - get:
           url: "https://recommendations-nafj7uberq-uc.a.run.app"
@@ -97,7 +97,7 @@ scenarios:
             statusCode: 200
 
   - name: "get-analytics"
-    weight: 5
+    weight: 50
     flow:
       - get:
           url: "https://analytics-nafj7uberq-uc.a.run.app"
@@ -105,9 +105,10 @@ scenarios:
             statusCode: 200
 
   - name: "get-reports"
-    weight: 5
+    weight: 60
     flow:
       - get:
           url: "https://reports-nafj7uberq-uc.a.run.app"
           expect:
             statusCode: 200
+
