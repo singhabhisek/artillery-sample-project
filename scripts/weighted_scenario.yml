@@ -1,77 +1,77 @@
 config:
-  target: "test.com"
+  target: "https://orders-994656192388.us-central1.run.app"  # base target
   plugins:
     metrics-by-endpoint:
-      # Group metrics by request name rather Group metrics by request name rather than URL:
+      # Group metrics by request name rather than URL
       useOnlyRequestNames: true
     ensure:
       thresholds:
-        # p99 of response time must be <250:
+        # p99 of response time must be <250
         - 'http.response_time.p90': 1000
   defaults:
     headers:
       Content-Type: "application/json"
   phases:
-    # Phase 0: Warm-up (low rate to wake up services)
-    # Ends at 1 TPS
     - duration: 30
-      arrivalRate: 10
+      arrivalRate: 5
       name: "Warm-up"
-    
-    # Phase 1: Ramp Up to 7 TPS in 1 minute
-    # Starts at 1 TPS (end of P0) and ramps to 7 TPS
     - duration: 60
-      arrivalRate: 10
-      target: 7
+      arrivalRate: 5
+      target: 70
       name: "RampUp_to_7_in_1min"
-      
-    # Phase 2: Steady State at 7 TPS for 2 minutes
-    # Starts and holds at 7 TPS
-    - duration: 120
+    - duration: 1200
       arrivalRate: 70
       name: "SS_7_TPS_2min"
-
-    # Phase 3: Ramp Up to 14 TPS in 1 minute
-    # Starts at 7 TPS (end of P2) and ramps to 14 TPS
-    - duration: 60
-      arrivalRate: 70
-      target: 14
-      name: "RampUp_to_14"
-
-    # Phase 4: Steady State at 14 TPS for 2 minutes
-    # Starts and holds at 14 TPS
     - duration: 120
+      arrivalRate: 70
+      target: 140
+      name: "RampUp_to_14"
+    - duration: 1200
       arrivalRate: 140
       name: "SS_14_TPS_2min"
-
-    # --- START OF CORRECTION ---
-    
-    # Phase 5: NEW PHASE - Ramp UP to the starting rate of the Ram-Down (25 TPS)
-    # Starts at 14 TPS (end of P4) and ramps to 25 TPS
-    - duration: 60
+    - duration: 300
       arrivalRate: 140
-      target: 25
-      name: "RampUp_to_25_for_Ramdown"
-
-    # Phase 6: Ram Down from 25 TPS to 19 TPS in 1 minute (60 seconds)
-    # Starts at 25 TPS (end of P5) and ramps down to 19 TPS
-    - duration: 60
-      arrivalRate: 250
-      target: 190
-      name: "RamDown_25_to_19"
-
-    # Phase 7: Steady State at 19 TPS for 2 minutes (120 seconds)
-    # Starts and holds at 19 TPS
+      target: 250
+      name: "RampUp_to_250"
     - duration: 120
-      arrivalRate: 190
-      name: "SS_19_TPS_2min"
-      
-    # --- END OF CORRECTION ---
-      
+      arrivalRate: 250
+      target: 150
+      name: "RamDown_25_to_15"
+    - duration: 600
+      arrivalRate: 150
+      name: "SS_15_TPS_2min"
   thresholds:
     http_req_failed: ['rate<0.05']
 
 scenarios:
+  - name: "post-orders"
+    weight: 10
+    flow:
+      - post:
+          url: "https://orders-994656192388.us-central1.run.app/orders"
+          json:
+            userId: "u-456"
+            items:
+              - productId: "p-1"
+                quantity: 2
+              - productId: "p-2"
+                quantity: 1
+          expect:
+            statusCode: 200
+
+  - name: "post-payments"
+    weight: 10
+    flow:
+      - post:
+          url: "https://payments-994656192388.us-central1.run.app/payments"
+          json:
+            orderId: "o-123"
+            amount: 245
+            currency: "USD"
+            paymentMethod: "card"
+          expect:
+            statusCode: 200
+
   - name: "get-users"
     weight: 40
     flow:
@@ -85,24 +85,6 @@ scenarios:
     flow:
       - get:
           url: "https://random-error-api-994656192388.us-central1.run.app"
-          expect:
-            statusCode: 200
-
-  - name: "post-orders"
-    weight: 10
-    flow:
-      - post:
-          url: "https://orders-nafj7uberq-uc.a.run.app"
-          json: {}
-          expect:
-            statusCode: 200
-
-  - name: "post-payments"
-    weight: 10
-    flow:
-      - post:
-          url: "https://payments-nafj7uberq-uc.a.run.app"
-          json: {}
           expect:
             statusCode: 200
 
