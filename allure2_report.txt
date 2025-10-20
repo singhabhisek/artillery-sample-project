@@ -6,12 +6,14 @@ const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 
 // --- Configuration & Defaults ---
+// Default values used if not provided via command line arguments or parsed from the HTML.
 const DEFAULT_HTML_FILE = 'artillery_report.html'; 
 const DEFAULT_APP_NAME = 'Default Application';
 const DEFAULT_RUN_ID = `RunID_${Date.now()}`; 
-const outputDir = './allure-results';
+const outputDir = './allure-results'; // Standard directory for Allure-compatible JSON files.
 
 // --- Parse Command-Line Arguments ---
+// Uses yargs to define and parse CLI arguments for file path, app name, and run ID.
 const argv = yargs(hideBin(process.argv))
     .option('html', {
         alias: 'f',
@@ -36,7 +38,10 @@ const argv = yargs(hideBin(process.argv))
 
 /**
  * Writes the executor.json file to provide a meaningful report title in the Allure header.
- * This fixes the "unknown" display on the Allure Overview page.
+ * This fixes the "unknown" display on the Allure Overview page by providing build info.
+ * @param {string} outputDir - The directory to save the JSON file.
+ * @param {string} appName - The name of the application.
+ * @param {string} runId - The unique ID for the test run.
  */
 function writeExecutorInfo(outputDir, appName, runId) {
     const executorPath = path.join(outputDir, 'executor.json');
@@ -44,18 +49,52 @@ function writeExecutorInfo(outputDir, appName, runId) {
         "name": "Artillery to Allure Converter",
         "type": "performance-tool",
         "url": "https://artillery.io/",
-        "buildName": `${appName} (${runId})`,
+        "buildName": `${appName} (${runId})`, // Name displayed in the Allure header
         "reportName": `Performance Test Report: ${appName}`,
         "reportUrl": "" 
     };
+    // Writes the executor JSON file to the allure-results directory.
     fs.writeFileSync(executorPath, JSON.stringify(executorData, null, 2), 'utf8');
 }
 
 
-// --- Core Logic: HTML Parsing ---
+// --- Core Logic: HTML Parsing & Utilities ---
+
+/**
+ * Converts human-readable duration string (e.g., "1h 1m 30s") to milliseconds.
+ * This is used to calculate the start and stop times for the overall summary test case.
+ * @param {string} durationStr - The duration string from the HTML report.
+ * @returns {number} Total duration in milliseconds.
+ */
+function parseDurationToMs(durationStr) {
+    if (!durationStr) return 0;
+    let totalMs = 0;
+    // Regex matches hours (e.g., 1h), minutes (e.g., 1m), seconds (e.g., 30s)
+    const parts = durationStr.match(/(\d+)([hms])/g); 
+    
+    if (parts) {
+        parts.forEach(part => {
+            const num = parseInt(part.slice(0, -1), 10);
+            const unit = part.slice(-1);
+            if (unit === 'h') {
+                totalMs += num * 3600 * 1000;
+            } else if (unit === 'm') {
+                totalMs += num * 60 * 1000;
+            } else if (unit === 's') {
+                totalMs += num * 1000;
+            }
+        });
+    }
+    return totalMs;
+}
+
 
 /**
  * Parses the HTML for AppName, RunID, and initial header metrics using specific HTML structure regex.
+ * It prioritizes CLI arguments over values found in the HTML.
+ * @param {string} htmlContent - The full content of the HTML report.
+ * @param {object} args - The command line arguments.
+ * @returns {object} Contains the final appName, runId, and all collected header metrics.
  */
 function parseHeaderInfo(htmlContent, args) {
     let appName = args.appName || DEFAULT_APP_NAME;
@@ -74,7 +113,7 @@ function parseHeaderInfo(htmlContent, args) {
     // Assign parsed values, prioritizing CLI args
     appName = args.appName || headerData['App Name'] || DEFAULT_APP_NAME;
     
-    // Use the Start time to generate a unique run ID if not provided
+    // Use the Start time to generate a unique run ID if not provided, ensuring it's safe for file names.
     const startTime = headerData['Start'] || 'Unknown_Start_Time';
     runId = args.runId || `TestRun_${startTime.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
@@ -84,6 +123,12 @@ function parseHeaderInfo(htmlContent, args) {
 
 /**
  * Programmatically extracts and formats Overall Test Metrics into a concise, multi-column HTML table.
+ * This HTML table will be used as the description for the "Overall Performance Summary" Allure test case.
+ * @param {string} htmlContent - The full content of the HTML report.
+ * @param {string} runId - The run ID.
+ * @param {string} appName - The application name.
+ * @param {object} headerData - The metrics parsed from the header.
+ * @returns {string} The HTML string for the professional metrics table.
  */
 function formatOverallMetrics(htmlContent, runId, appName, headerData) {
     
@@ -96,19 +141,20 @@ function formatOverallMetrics(htmlContent, runId, appName, headerData) {
     Object.assign(data, headerData);
 
     // 2. Extract key-value pairs from the Single-Digit Metrics card
+    // This regex attempts to isolate the section containing the main single-digit metrics.
     const metricCardRegex = /<h5 class='mb-3'>📊 Overall Single-Digit Metrics[\s\S]*?(<h5 class='mb-3'>📋 Transaction Summary Table)/s;
     const metricCardMatch = htmlContent.match(metricCardRegex);
     const metricCardHtml = metricCardMatch ? metricCardMatch[0].replace(metricCardMatch[1], '').trim() : ''; 
 
-    // Extract individual metrics from the captured HTML using class names
+    // Extract individual metrics using class names
     const singleMetricRegex = /<div class='key-metric-label'>([^<]+)<\/div>\s*<div class='key-metric-value'>([^<]+)<\/div>/g;
     
     let match;
-    while ((match = singleMetricRegex.exec(metricCardHtml)) !== null) {
+    while ((match = singleMetricRegex.exec(htmlContent)) !== null) {
         const key = match[1].trim();
         let value = match[2].trim();
         
-        // Clean up key names for better display
+        // Clean up key names for better display and consistency
         const cleanedKey = key
             .replace(/Overall Avg RT \(Weighted Mean\)/, 'Overall Avg RT (P50)')
             .replace(/Avg RPS \(Throughput\)/, 'Avg RPS')
@@ -122,7 +168,7 @@ function formatOverallMetrics(htmlContent, runId, appName, headerData) {
         data[cleanedKey] = value;
     }
     
-    // 3. Define the concise grouping and display order
+    // 3. Define the concise grouping and display order for the final HTML table
     const groups = [
         {
             title: 'General Information & Scope',
@@ -139,6 +185,7 @@ function formatOverallMetrics(htmlContent, runId, appName, headerData) {
     ];
 
     // 4. Generate Professional Multi-Column HTML Table (2 metrics side-by-side per row)
+    // The styles are inline to ensure they render correctly within the Allure report description.
     const keyStyle = `font-weight: 500; color: #555; width: 25%; padding: 6px 10px; border-right: 1px solid #eee;`;
     const valueStyle = `font-weight: 700; width: 25%; padding: 6px 10px;`;
     const headerStyle = `background-color: #eef2f5; font-weight: 700; padding: 8px 10px; border-bottom: 2px solid #ddd;`;
@@ -160,6 +207,7 @@ function formatOverallMetrics(htmlContent, runId, appName, headerData) {
         const validKeys = group.keys.filter(key => data[key] !== undefined);
         const totalItems = validKeys.length;
         
+        // Loop through keys, putting two key/value pairs in each row
         for (let i = 0; i < totalItems; i += 2) {
             const key1 = validKeys[i];
             const key2 = validKeys[i + 1];
@@ -188,11 +236,15 @@ function formatOverallMetrics(htmlContent, runId, appName, headerData) {
 }
 
 /**
- * Parses the Transaction Summary Table.
+ * Parses the Transaction Summary Table from the HTML content.
+ * It extracts key metrics and determines the Allure status (passed, failed, broken)
+ * for each transaction based on P95 SLA check, TPH check, and error count.
+ * @param {string} htmlContent - The full content of the HTML report.
+ * @returns {Array<object>} An array of transaction metric objects.
  */
 function parseTransactionSummary(htmlContent) {
     const metrics = [];
-    // 1. Locate and Extract Transaction Summary Table Body
+    // 1. Locate and Extract Transaction Summary Table Body using regex
     const tableRegex = /<table[^>]*>[\s\S]*?<thead>[\s\S]*?<\/thead>[\s\S]*?<tbody>([\s\S]*?)<\/tbody>[\s\S]*?<\/table>/;
     const tableMatch = htmlContent.match(tableRegex);
 
@@ -201,35 +253,59 @@ function parseTransactionSummary(htmlContent) {
     }
 
     const tableBodyHtml = tableMatch[1];
+    // Split into rows and then parse cells in each row
     const rows = tableBodyHtml.trim().split('</tr>').filter(row => row.includes('<td')).map(row => row.trim());
     const cellRegex = /<td[^>]*>(.*?)<\/td>/g;
     
     rows.forEach(row => {
         const cells = [];
         let match;
+        // Extract all cell contents
         while ((match = cellRegex.exec(row)) !== null) {
             cells.push(match[1].trim());
         }
 
-        // Ensure we have 13 columns for the transaction metrics
+        // Ensure we have 13 columns for the transaction metrics (indices 0 to 12)
         if (cells.length >= 13) {
             const trxName = cells[0];
             const slaStatus = cells[12];
             const slaP95 = parseFloat(cells[1]); 
-            const p95 = parseFloat(cells[6]); 
+            const p95Actual = parseFloat(cells[6]); 
+            const expectedTph = parseInt(cells[8]); // Expected_TPH is at index 8
+            const totalCount = parseInt(cells[9]);  // Total Count is at index 9
             const failCount = parseInt(cells[11]); 
             
             let status = 'passed';
             let statusDetails = '';
+            let failedChecks = []; // Array to store all reasons for failure/broken status
             
+            // --- SLA Check 1: P95 Response Time ---
             if (slaStatus.toLowerCase().includes('not met')) {
                 // P95 SLA Breach = FAILED
                 status = 'failed';
-                statusDetails = `${trxName}: P95 RT (${p95.toFixed(1)}ms) EXCEEDED SLA (${slaP95.toFixed(1)}ms)`;
-            } else if (failCount > 0) {
-                 // Errors present, but SLA met = BROKEN (Warning status for step)
+                failedChecks.push(`P95 RT (${p95Actual.toFixed(1)}ms) EXCEEDED SLA (${slaP95.toFixed(1)}ms)`);
+            } 
+            
+            // --- SLA Check 2: Throughput (Expected TPH vs. Actual Count) ---
+            // If Expected_TPH is set (> 0) and the Actual Count is lower than expected, it's a failure.
+            if (expectedTph > 0 && totalCount < expectedTph) {
+                 // Throughput SLA Breach = FAILED
+                 status = 'failed'; // Elevate status to failed
+                 failedChecks.push(`Throughput NOT MET! Actual Count (${totalCount}) < Expected TPH (${expectedTph})`);
+            }
+            
+            // --- Error Check: Transactions that failed for other reasons ---
+            if (failCount > 0 && status !== 'failed') {
+                 // Errors present, but SLAs met = BROKEN (Warning status)
+                 // 'Broken' is used for an issue that isn't a direct test failure (like an exception/error)
+                 // This is only set if the status isn't already 'failed' from an SLA breach.
                  status = 'broken'; 
-                 statusDetails = `${trxName}: WARNING! ${failCount} errors reported.`;
+                 failedChecks.push(`WARNING! ${failCount} errors reported.`);
+            }
+
+            if (failedChecks.length > 0) {
+                // Combine all failure/warning reasons into the final status message
+                statusDetails = `${trxName}: FAILED/BROKEN due to: ${failedChecks.join('; ')}`;
             } else {
                  statusDetails = `${trxName}: Passed All Checks.`;
             }
@@ -240,13 +316,14 @@ function parseTransactionSummary(htmlContent) {
                 p50: parseFloat(cells[2]).toFixed(1),
                 min: parseFloat(cells[3]).toFixed(1),
                 max: parseFloat(cells[4]).toFixed(1),
-                p90: parseFloat(cells[5]).toFixed(1), // P90 metric is here
-                p95: p95.toFixed(1),
-                totalCount: parseInt(cells[9]),
+                p90: parseFloat(cells[5]).toFixed(1),
+                p95: p95Actual.toFixed(1),
+                expectedTph: expectedTph, // New TPH metric
+                totalCount: totalCount,   // Total transactions processed
                 passCount: parseInt(cells[10]),
                 failCount: failCount,
                 slaStatusText: slaStatus,
-                status: status,
+                status: status, // Final status based on all checks
                 statusDetails: statusDetails
             });
         }
@@ -257,6 +334,9 @@ function parseTransactionSummary(htmlContent) {
 
 /**
  * Generates the Allure Transaction Summary Table HTML with SLA Status at the end.
+ * This table will be part of the "Overall Performance Summary" description in Allure.
+ * @param {Array<object>} finalMetrics - The array of parsed transaction metric objects.
+ * @returns {string} The HTML string for the transaction summary table.
  */
 function generateSummaryTableHtml(finalMetrics) {
     let html = `
@@ -271,19 +351,25 @@ function generateSummaryTableHtml(finalMetrics) {
                 <th style="border: 1px solid #ddd; padding: 8px;">P90 RT (ms)</th>
                 <th style="border: 1px solid #ddd; padding: 8px;">P95 (ms)</th>
                 <th style="border: 1px solid #ddd; padding: 8px;">SLA (P95 ms)</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">Expected TPH</th>
                 <th style="border: 1px solid #ddd; padding: 8px;">Total Trx</th>
                 <th style="border: 1px solid #ddd; padding: 8px;">Pass Trx</th>
                 <th style="border: 1px solid #ddd; padding: 8px;">Fail Trx</th>
-                <th style="border: 1px solid #ddd; padding: 8px;">SLA Status</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">Status</th>
             </tr>
         </thead>
         <tbody>
     `;
 
     finalMetrics.forEach(m => {
-        const statusColor = m.slaStatusText === 'Met' ? 'background-color: #d4edda; color: #155724;' 
-                          : 'background-color: #f8d7da; color: #721c24;';
+        // Define color styles based on overall status (combines both SLA checks)
+        const statusColor = m.status === 'passed' ? 'background-color: #d4edda; color: #155724;' 
+                          : m.status === 'failed' ? 'background-color: #f8d7da; color: #721c24;'
+                          : 'background-color: #fff3cd; color: #856404;'; // broken status is yellow
         
+        // Check if TPH was breached for highlighting
+        const isTphBreached = m.expectedTph > 0 && m.totalCount < m.expectedTph;
+
         html += `
             <tr>
                 <td style="border: 1px solid #ddd; padding: 8px; text-align: left;">${m.trxName}</td>
@@ -293,10 +379,11 @@ function generateSummaryTableHtml(finalMetrics) {
                 <td style="border: 1px solid #ddd; padding: 8px;">${m.p90}</td>
                 <td style="border: 1px solid #ddd; padding: 8px; ${m.slaStatusText === 'Not Met' ? 'font-weight: bold; color: red;' : ''}">${m.p95}</td>
                 <td style="border: 1px solid #ddd; padding: 8px;">${m.slaP95}</td>
+                <td style="border: 1px solid #ddd; padding: 8px; ${isTphBreached ? 'font-weight: bold; color: red;' : ''}">${m.expectedTph}</td>
                 <td style="border: 1px solid #ddd; padding: 8px;">${m.totalCount}</td>
-                <td style="border: 19px solid #ddd; padding: 8px;">${m.passCount}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${m.passCount}</td>
                 <td style="border: 1px solid #ddd; padding: 8px; ${m.failCount > 0 ? 'font-weight: bold; color: red;' : ''}">${m.failCount}</td>
-                <td style="border: 1px solid #ddd; padding: 8px; ${statusColor}">${m.slaStatusText}</td>
+                <td style="border: 1px solid #ddd; padding: 8px; ${statusColor}">${m.status.toUpperCase()}</td>
             </tr>
         `;
     });
@@ -307,7 +394,7 @@ function generateSummaryTableHtml(finalMetrics) {
 
 // --- Main execution logic ---
 try {
-    // 1. Ensure directories
+    // 1. Ensure directories exist: outputDir for results, and attachmentsDir for the original HTML.
     const attachmentsDir = path.join(outputDir, 'attachments');
     [outputDir, attachmentsDir].forEach(dir => {
         if (!fs.existsSync(dir)) {
@@ -318,17 +405,28 @@ try {
     // 2. Load and Parse HTML Report
     const INPUT_HTML_FILE = argv.html;
     if (!fs.existsSync(INPUT_HTML_FILE)) {
-        throw new Error(`Input HTML report not found: ${INPUT_HTML_FILE}. Check the path or ensure the Python script ran successfully.`);
+        throw new Error(`Input HTML report not found: ${INPUT_HTML_FILE}. Check the path or ensure the Artillery test ran successfully.`);
     }
     const rawHtml = fs.readFileSync(INPUT_HTML_FILE, 'utf8');
 
-    // Parse App Name, Run ID, and initial header metrics
+    // Parse App Name, Run ID, and initial header metrics from the HTML content
     const { appName, runId, headerData } = parseHeaderInfo(rawHtml, argv);
     
-    // Parse transaction metrics
+    // Parse transaction metrics, including the new TPH SLA checks
     const metrics = parseTransactionSummary(rawHtml);
+
+    // --- Duration Logic for Overall Summary Test ---
+    // The summary test should reflect the actual duration of the whole test run.
+    const durationStr = headerData['Duration'] || '0s';
+    const runDurationMs = parseDurationToMs(durationStr);
+    
+    // Calculate start time by subtracting the run duration from the current time (stop time).
+    const overallStopTimeMs = Date.now();
+    const overallStartTimeMs = overallStopTimeMs - runDurationMs;
+    // -----------------------------------------------
     
     if (metrics.length === 0) {
+        // Handle case where no transaction data could be parsed (e.g., test failed early or report format changed).
         const failureHtml = `<p style="color:red; font-weight:bold;">ERROR: No transaction summary table was found in the HTML report. The test may have failed to complete successfully.</p>`;
         const professionalOverallMetricsHtml = formatOverallMetrics(rawHtml, runId, appName, headerData);
         
@@ -336,14 +434,17 @@ try {
             uuid: uuidv4(),
             name: `Overall Performance Summary`,
             fullName: `${appName}.${runId}-Summary`,
-            status: 'broken',
+            status: 'broken', // Set to 'broken' as parsing failed
             stage: "finished",
+            start: overallStartTimeMs, 
+            stop: overallStopTimeMs,   
             descriptionHtml: professionalOverallMetricsHtml + failureHtml,
             labels: [
                 { name: "parentSuite", value: appName },
                 { name: "suite", value: runId },
                 { name: "subSuite", value: "Summary" },
-                { name: "feature", value: "Performance Dashboard" },
+                { name: "feature", value: appName },
+                { name: "story", value: runId },
             ],
             steps: [{name: "Failed to parse transaction data.", status: "broken", stage: "finished"}],
             attachments: []
@@ -359,6 +460,7 @@ try {
     const professionalOverallMetricsHtml = formatOverallMetrics(rawHtml, runId, appName, headerData);
 
     // 3. Prepare Attachment
+    // Copy the original HTML report into the 'attachments' folder for direct linking in Allure.
     const htmlAttachmentName = path.basename(INPUT_HTML_FILE);
     const attachmentSourcePath = path.join(attachmentsDir, htmlAttachmentName);
     fs.copyFileSync(INPUT_HTML_FILE, attachmentSourcePath);
@@ -373,7 +475,9 @@ try {
     `;
 
     // 5. Create Overall Summary Test Case
-    const overallStatus = metrics.some(m => m.status === 'failed') ? 'failed' : 'passed';
+    // The overall status is 'failed' if *any* transaction metric is 'failed' (RT or TPH SLA breached).
+    const overallStatus = metrics.some(m => m.status === 'failed') ? 'failed' : 
+                          metrics.some(m => m.status === 'broken') ? 'broken' : 'passed';
 
     const summaryTest = {
         uuid: uuidv4(),
@@ -381,53 +485,91 @@ try {
         fullName: `${appName}.${runId}-Summary`,
         status: overallStatus, 
         stage: "finished",
-        descriptionHtml: finalDescriptionHtml,
+        start: overallStartTimeMs, // Uses actual run start
+        stop: overallStopTimeMs,   // Uses actual run stop
+        descriptionHtml: finalDescriptionHtml, // Contains the formatted metrics and table
         labels: [
+            // Allure hierarchy labels
             { name: "parentSuite", value: appName },
             { name: "suite", value: runId },
-            { name: "subSuite", value: "Summary" },
-            { name: "feature", value: "Performance Dashboard" },
+            { name: "subSuite", value: "Overall" }, 
+            
+            // Labels for Allure filter grouping
+            { name: "feature", value: appName }, 
+            { name: "story", value: runId }, 
+            
+            { name: "epic", value: "Performance Dashboard" }, 
         ],
+        // Converts each transaction into a 'step' within the overall summary test case.
         steps: metrics.map(m => {
             return { 
-                name: `${m.trxName} | P95: ${m.p95}ms (SLA: ${m.slaP95}ms)`, 
-                status: m.status, 
+                name: `${m.trxName} | P95: ${m.p95}ms (SLA: ${m.slaP95}ms) | TPH: ${m.totalCount} (Exp: ${m.expectedTph})`, 
+                status: m.status, // Uses transaction status
                 stage: "finished",
                 statusDetails: { message: m.statusDetails }
             };
         }),
         attachments: [
+            // Link to the original HTML report
             { name: "Full Performance Dashboard (HTML)", type: mime.lookup('html'), source: `attachments/${htmlAttachmentName}` },
         ]
     };
     
     // 6. Create Individual Transaction Test Cases
+    // Each transaction is represented as a separate Allure test result.
     const transactionTests = metrics.map(m => {
+        // --- Synthetic Duration Logic ---
+        // P90 response time is used as a synthetic duration to represent the typical latency.
+        const p90RtMs = parseFloat(m.p90);
+        
+        // Set the 'start' time to the current timestamp and calculate 'stop' time using P90 RT.
+        const synthStartTime = Date.now();
+        const synthStopTime = Math.round(synthStartTime + p90RtMs);
+        
+        // --- Metric Value for Display ---
+        const labelValue = `P90: ${m.p90}ms | TPH: ${m.totalCount} / ${m.expectedTph}`;
+        
+        // --- Synthetic Class Name to satisfy Allure's strict format ---
+        const syntheticClassName = `com.perftest.ArtilleryTransaction`;
+
         return {
             uuid: uuidv4(),
-            // Show SLA (P95) and P90 in the test case name for maximum visibility in the Suites Tab.
-            name: `${m.trxName} | SLA: ${m.slaP95}ms | P90: ${m.p90}ms`,
+            name: `${m.trxName} (RT SLA:${m.slaP95}ms, TPH SLA:${m.expectedTph})`, 
             fullName: `${appName}.${runId}-${m.trxName}`,
-            status: m.status,
+            status: m.status, // Uses individual transaction status (passed/failed/broken)
             stage: "finished",
-            description: `**P95 Response Time SLA**: ${m.p95}ms (SLA: ${m.slaP95}ms)\n**P90 Response Time**: ${m.p90}ms\n**Total Count**: ${m.totalCount}`,
+            start: synthStartTime, 
+            stop: synthStopTime,   
+            // Simple description using markdown (Updated to include TPH)
+            description: `**P95 Response Time SLA**: ${m.p95}ms (SLA: ${m.slaP95}ms)\n**Throughput SLA**: Actual ${m.totalCount} (Expected TPH: ${m.expectedTph})\n**Total Count**: ${m.totalCount}`,
             statusDetails: { 
                 message: m.statusDetails,
-                trace: `P95 Status: ${m.slaStatusText}. Fail Count: ${m.failCount}.` 
+                trace: `P95 Status: ${m.slaStatusText}. TPH Check: ${m.totalCount >= m.expectedTph ? 'Met' : 'Not Met'}. Fail Count: ${m.failCount}.` 
             },
             labels: [
+                // Allure hierarchy labels for filtering
                 { name: "parentSuite", value: appName },
                 { name: "suite", value: runId },
                 { name: "subSuite", value: "Transactions" }, 
-                { name: "feature", value: m.trxName },
-                // ADDED: Explicitly set package/testClass to remove the "Unknown" placeholder
-                { name: "package", value: "Transactions" },
-                { name: "testClass", value: m.trxName },
+                
+                { name: "feature", value: appName }, 
+                { name: "story", value: runId }, 
+                
+                { name: "package", value: appName }, 
+                { name: "thread", value: labelValue }, 
+                { name: "testClass", value: syntheticClassName }, 
             ],
+            // Detailed steps to show all SLA and error checks
             steps: [
                 {
-                    name: `Check P95 SLA: ${m.p95}ms <= ${m.slaP95}ms`,
+                    name: `Check P95 RT SLA: ${m.p95}ms <= ${m.slaP95}ms`,
                     status: m.slaStatusText === 'Met' ? 'passed' : 'failed',
+                    stage: "finished"
+                },
+                {
+                    name: `Check Throughput SLA: Actual ${m.totalCount} >= Expected TPH ${m.expectedTph}`,
+                    // Status is failed if TPH is set (>0) and actual count is less than expected
+                    status: (m.expectedTph > 0 && m.totalCount < m.expectedTph) ? 'failed' : 'passed', 
                     stage: "finished"
                 },
                 {
@@ -443,14 +585,16 @@ try {
     const allTests = [summaryTest, ...transactionTests];
     allTests.forEach(test => {
         const testFileName = `${test.uuid}-result.json`;
+        // Write the result file for each test case
         fs.writeFileSync(path.join(outputDir, testFileName), JSON.stringify(test, null, 2), 'utf8');
     });
 
     // 8. Write Test Case Container and Executor Info
+    // A container links test results to form a single suite/run in Allure.
     const container = {
         uuid: uuidv4(),
         name: runId,
-        children: allTests.map(t => t.uuid)
+        children: allTests.map(t => t.uuid) // List of all test result UUIDs
     };
     fs.writeFileSync(path.join(outputDir, `${container.uuid}-container.json`), JSON.stringify(container, null, 2), 'utf8');
 
@@ -458,6 +602,7 @@ try {
     writeExecutorInfo(outputDir, appName, runId);
 
     console.log(`\n✅ Successfully generated ${allTests.length} Allure result files for ${appName} (RunID: ${runId})`);
+    console.log(`Test Duration: ${durationStr} (${runDurationMs}ms)`);
     console.log(`To view the report, run: allure serve ${outputDir}`);
 
 } catch (e) {
