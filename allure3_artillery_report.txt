@@ -1,0 +1,551 @@
+const fs = require('fs');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
+const mime = require('mime-types');
+const yargs = require('yargs/yargs');
+const { hideBin } = require('yargs/helpers');
+
+// --- Configuration & Defaults ---
+const DEFAULT_HTML_FILE = 'artillery_report.html'; 
+const DEFAULT_APP_NAME = 'Default Application';
+const DEFAULT_RUN_ID = `RunID_${Date.now()}`; 
+const outputDir = './allure-results'; 
+
+// --- Parse Command-Line Arguments ---
+const argv = yargs(hideBin(process.argv))
+    .option('html', {
+        alias: 'f',
+        type: 'string',
+        description: 'Path to the input HTML report file',
+        default: DEFAULT_HTML_FILE
+    })
+    .option('appName', {
+        alias: 'a',
+        type: 'string',
+        description: 'Override Application Name (Parent Suite)'
+    })
+    .option('runId', {
+        alias: 'r',
+        type: 'string',
+        description: 'Override Run ID (Suite Name)'
+    })
+    .help()
+    .argv;
+
+// --- Core Logic: Allure Metadata ---
+
+function writeExecutorInfo(outputDir, appName, runId) {
+    const executorPath = path.join(outputDir, 'executor.json');
+    const executorData = {
+        "name": "Artillery to Allure Converter",
+        "type": "performance-tool",
+        "url": "https://artillery.io/",
+        "buildName": `${appName} (${runId})`, 
+        "reportName": `Performance Test Report: ${appName}`,
+        "reportUrl": "" 
+    };
+    fs.writeFileSync(executorPath, JSON.stringify(executorData, null, 2), 'utf8');
+}
+
+
+// --- Core Logic: HTML Parsing & Utilities ---
+
+function parseDurationToMs(durationStr) {
+    if (!durationStr) return 0;
+    let totalMs = 0;
+    const parts = durationStr.match(/(\d+)([hms])/g); 
+    
+    if (parts) {
+        parts.forEach(part => {
+            const num = parseInt(part.slice(0, -1), 10);
+            const unit = part.slice(-1);
+            if (unit === 'h') {
+                totalMs += num * 3600 * 1000;
+            } else if (unit === 'm') {
+                totalMs += num * 60 * 1000;
+            } else if (unit === 's') {
+                totalMs += num * 1000;
+            }
+        });
+    }
+    return totalMs;
+}
+
+function parseHeaderInfo(htmlContent, args) {
+    let appName = args.appName || DEFAULT_APP_NAME;
+    let runId = args.runId || DEFAULT_RUN_ID;
+    
+    const headerMetricRegex = /<strong>([^<]+):<\/strong><div>([^<]+)<\/div>/g;
+    const headerData = {};
+    let match;
+    while ((match = headerMetricRegex.exec(htmlContent)) !== null) {
+        const key = match[1].trim();
+        const value = match[2].trim();
+        headerData[key] = value;
+    }
+
+    appName = args.appName || headerData['App Name'] || DEFAULT_APP_NAME;
+    
+    const startTime = headerData['Start'] || 'Unknown_Start_Time';
+    runId = args.runId || `TestRun_${startTime.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+    return { appName, runId, headerData }; 
+}
+
+function formatOverallMetrics(htmlContent, runId, appName, headerData) {
+    
+    const data = {
+        'Application Name': appName,
+        'Test Run ID': runId,
+    };
+    Object.assign(data, headerData);
+
+    const metricCardRegex = /<h5 class='mb-3'>📊 Overall Single-Digit Metrics[\s\S]*?(<h5 class='mb-3'>📋 Transaction Summary Table)/s;
+    const metricCardMatch = htmlContent.match(metricCardRegex);
+    const singleMetricRegex = /<div class='key-metric-label'>([^<]+)<\/div>\s*<div class='key-metric-value'>([^<]+)<\/div>/g;
+    
+    let match;
+    while ((match = singleMetricRegex.exec(htmlContent)) !== null) {
+        const key = match[1].trim();
+        let value = match[2].trim();
+        
+        const cleanedKey = key
+            .replace(/Overall Avg RT \(Weighted Mean\)/, 'Overall Avg RT (P50)')
+            .replace(/Avg RPS \(Throughput\)/, 'Avg RPS')
+            .replace(/ \(Worst Case\)/g, ''); 
+        
+        if (cleanedKey === 'Total Requests') {
+            value = data['Total Transactions'] || value; 
+        }
+
+        data[cleanedKey] = value;
+    }
+    
+    const groups = [
+        {
+            title: 'General Information & Scope',
+            keys: ['Application Name', 'Test Run ID', 'Start', 'End', 'Duration', 'Total Requests'],
+        },
+        {
+            title: 'Overall Response Time (ms)',
+            keys: ['Overall Avg RT (P50)', 'Overall P90 RT', 'Overall P95 RT', 'Max RT (Test Max)'],
+        },
+        {
+            title: 'Throughput & Success Response Time (ms)',
+            keys: ['Avg RPS', 'Max RPS (Peak Rate)', '2xx Avg RT (P50)', '2xx P95 RT'],
+        }
+    ];
+
+    const keyStyle = `font-weight: 500; color: #555; width: 25%; padding: 6px 10px; border-right: 1px solid #eee;`;
+    const valueStyle = `font-weight: 700; width: 25%; padding: 6px 10px;`;
+    const headerStyle = `background-color: #eef2f5; font-weight: 700; padding: 8px 10px; border-bottom: 2px solid #ddd;`;
+
+    let html = `
+    <h3 style="margin-top: 20px;">Overall Performance Metrics</h3>
+    <table style="width:100%; border-collapse: collapse; font-size: 14px; text-align: left; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+        <tbody>
+    `;
+    
+    groups.forEach(group => {
+        html += `
+            <tr style="border-top: 1px solid #ddd;">
+                <td colspan="4" style="${headerStyle}">${group.title}</td>
+            </tr>
+        `;
+        
+        const validKeys = group.keys.filter(key => data[key] !== undefined);
+        const totalItems = validKeys.length;
+        
+        for (let i = 0; i < totalItems; i += 2) {
+            const key1 = validKeys[i];
+            const key2 = validKeys[i + 1];
+            
+            html += `<tr>`;
+            
+            html += `<td style="${keyStyle}">${key1}</td>`;
+            html += `<td style="${valueStyle}">${data[key1]}</td>`;
+            
+            if (key2) {
+                html += `<td style="${keyStyle}">${key2}</td>`;
+                html += `<td style="${valueStyle}">${data[key2]}</td>`;
+            } else {
+                html += `<td colspan="2" style="border: none;"></td>`;
+            }
+            
+            html += `</tr>`;
+        }
+    });
+
+    html += `</tbody></table>`;
+    return html;
+}
+
+/**
+ * Parses the Transaction Summary Table from the HTML content.
+ * It extracts key metrics and determines the Allure status (passed, failed, broken)
+ * for each transaction based on P95 SLA check, Pass Count SLA check, and error count.
+ * @param {string} htmlContent - The full content of the HTML report.
+ * @returns {Array<object>} An array of transaction metric objects.
+ */
+function parseTransactionSummary(htmlContent) {
+    const metrics = [];
+    const tableRegex = /<table[^>]*>[\s\S]*?<thead>[\s\S]*?<\/thead>[\s\S]*?<tbody>([\s\S]*?)<\/tbody>[\s\S]*?<\/table>/;
+    const tableMatch = htmlContent.match(tableRegex);
+
+    if (!tableMatch || !tableMatch[1]) {
+        return metrics;
+    }
+
+    const tableBodyHtml = tableMatch[1];
+    const rows = tableBodyHtml.trim().split('</tr>').filter(row => row.includes('<td')).map(row => row.trim());
+    const cellRegex = /<td[^>]*>(.*?)<\/td>/g;
+    
+    rows.forEach(row => {
+        const cells = [];
+        let match;
+        while ((match = cellRegex.exec(row)) !== null) {
+            cells.push(match[1].trim());
+        }
+
+        // We expect at least 13 columns based on the user's table structure
+        // 0: Transaction | 1: SLA(ms) | ... | 8: Expected_TPH | 9: Count | 10: Pass_Count | 11: Fail_Count | 12: SLA P95 Status
+        if (cells.length >= 13) {
+            const trxName = cells[0];
+            const slaP95Status = cells[12]; // P95 SLA Status
+            const slaP95 = parseFloat(cells[1]); 
+            const p90 = parseFloat(cells[5]);
+            const p95Actual = parseFloat(cells[6]); 
+            const expectedTph = parseInt(cells[8]); // Expected_TPH (Now treated as MIN Pass Count)
+            const totalCount = parseInt(cells[9]);  // Total Count
+            const passCount = parseInt(cells[10]);  // Pass Count
+            const failCount = parseInt(cells[11]); 
+            const p50 = parseFloat(cells[2]);
+
+            let status = 'passed';
+            let statusDetails = '';
+            let passCountSlaStatus = 'Passed';
+            
+            // 1. Check Response Time SLA
+            if (slaP95Status.toLowerCase().includes('not met')) {
+                status = 'failed';
+                statusDetails = `${trxName}: P95 RT (${p95Actual.toFixed(1)}ms) EXCEEDED SLA (${slaP95.toFixed(1)}ms)`;
+            } 
+            
+            // 2. Check Pass Count SLA (Expected_TPH is the minimum pass count target)
+            if (expectedTph > 0 && passCount < expectedTph) {
+                passCountSlaStatus = 'Failed';
+                
+                // If Pass Count failed, update status to 'failed' if not already failed by RT
+                if (status !== 'failed') { 
+                     status = 'failed';
+                     statusDetails = `${trxName}: Pass Count Breach: Actual Pass Count (${passCount}) < Min Required (${expectedTph}).`;
+                } else {
+                     statusDetails += ` | Pass Count Breach: Actual Pass Count (${passCount}) < Min Required (${expectedTph}).`;
+                }
+            }
+
+            // 3. Check Error Count
+            if (failCount > 0) {
+                 // If errors present, and overall status is not failed (i.e. RT/Pass Count met), mark as broken.
+                 if (status === 'passed') {
+                     status = 'broken'; 
+                     statusDetails = `${trxName}: WARNING! ${failCount} errors reported.`;
+                 } else {
+                     statusDetails += ` | WARNING! ${failCount} errors reported.`;
+                 }
+            } else if (status === 'passed') {
+                 // Final passed status
+                 statusDetails = `${trxName}: Passed All Checks.`;
+            }
+
+
+            metrics.push({
+                trxName: trxName,
+                slaP95: slaP95.toFixed(1),
+                p50: p50.toFixed(1),
+                min: parseFloat(cells[3]).toFixed(1),
+                max: parseFloat(cells[4]).toFixed(1),
+                p90: p90.toFixed(1),
+                p95: p95Actual.toFixed(1),
+                minPassCount: expectedTph, // Renamed for clarity in script
+                passCountSlaStatus: passCountSlaStatus, // NEW
+                totalCount: totalCount,
+                passCount: passCount,
+                failCount: failCount,
+                slaP95Status: slaP95Status, // Renamed for clarity in script
+                status: status,
+                statusDetails: statusDetails
+            });
+        }
+    });
+
+    return metrics;
+}
+
+/**
+ * Generates the Allure Transaction Summary Table HTML with SLA Statuses at the end.
+ * @param {Array<object>} finalMetrics - The array of parsed transaction metric objects.
+ * @returns {string} The HTML string for the transaction summary table.
+ */
+function generateSummaryTableHtml(finalMetrics) {
+    let html = `
+    <h3 style="margin-top: 20px;">Transaction Summary Table</h3>
+    <table style="width:100%; border-collapse: collapse; font-size: 14px; text-align: center;">
+        <thead style="background-color:#f2f2f2;">
+            <tr>
+                <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">TrxName</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">P50 RT (ms)</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">Min RT (ms)</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">Max RT (ms)</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">P90 RT (ms)</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">P95 (ms)</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">SLA (P95 ms)</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">Min Pass Count</th> <th style="border: 1px solid #ddd; padding: 8px;">Actual Pass Count</th> <th style="border: 1px solid #ddd; padding: 8px;">Total Trx Count</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">Fail Trx Count</th>
+                <th style="border: 1px solid #ddd; padding: 8px;">Pass Count Status</th> <th style="border: 1px solid #ddd; padding: 8px;">P95 SLA Status</th>
+            </tr>
+        </thead>
+        <tbody>
+    `;
+
+    finalMetrics.forEach(m => {
+        // P95 RT Status Color
+        const rtStatusColor = m.slaP95Status === 'Met' ? 'background-color: #d4edda; color: #155724;' 
+                          : 'background-color: #f8d7da; color: #721c24;';
+        
+        // Pass Count Status Color
+        const pcStatusColor = m.passCountSlaStatus === 'Passed' ? 'background-color: #d4edda; color: #155724;' 
+                          : 'background-color: #f8d7da; color: #721c24;';
+        
+        // Pass Count Style if failed
+        const pcStyle = m.passCountSlaStatus === 'Failed' ? 'font-weight: bold; color: red;' : '';
+
+        html += `
+            <tr>
+                <td style="border: 1px solid #ddd; padding: 8px; text-align: left;">${m.trxName}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${m.p50}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${m.min}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${m.max}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${m.p90}</td>
+                <td style="border: 1px solid #ddd; padding: 8px; ${m.slaP95Status === 'Not Met' ? 'font-weight: bold; color: red;' : ''}">${m.p95}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${m.slaP95}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${m.minPassCount}</td> 
+                <td style="border: 1px solid #ddd; padding: 8px; ${pcStyle}">${m.passCount}</td> 
+                <td style="border: 1px solid #ddd; padding: 8px;">${m.totalCount}</td>
+                <td style="border: 1px solid #ddd; padding: 8px; ${m.failCount > 0 ? 'font-weight: bold; color: red;' : ''}">${m.failCount}</td>
+                <td style="border: 1px solid #ddd; padding: 8px; ${pcStatusColor}">${m.passCountSlaStatus}</td>
+                <td style="border: 1px solid #ddd; padding: 8px; ${rtStatusColor}">${m.slaP95Status}</td>
+            </tr>
+        `;
+    });
+
+    html += `</tbody></table>`;
+    return html;
+}
+
+// --- Main execution logic ---
+try {
+    // 1. Ensure directories exist: outputDir for results, and attachmentsDir for the original HTML.
+    const attachmentsDir = path.join(outputDir, 'attachments');
+    [outputDir, attachmentsDir].forEach(dir => {
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+    });
+
+    // 2. Load and Parse HTML Report
+    const INPUT_HTML_FILE = argv.html;
+    if (!fs.existsSync(INPUT_HTML_FILE)) {
+        throw new Error(`Input HTML report not found: ${INPUT_HTML_FILE}. Check the path or ensure the Python script ran successfully.`);
+    }
+    const rawHtml = fs.readFileSync(INPUT_HTML_FILE, 'utf8');
+
+    // Parse App Name, Run ID, and initial header metrics
+    const { appName, runId, headerData } = parseHeaderInfo(rawHtml, argv);
+    
+    // Parse transaction metrics
+    const metrics = parseTransactionSummary(rawHtml);
+
+    // --- Duration Logic for Overall Summary Test ---
+    const durationStr = headerData['Duration'] || '0s';
+    const runDurationMs = parseDurationToMs(durationStr);
+    const overallStopTimeMs = Date.now();
+    const overallStartTimeMs = overallStopTimeMs - runDurationMs;
+    // -----------------------------------------------
+    
+    if (metrics.length === 0) {
+        // Handle case where no transaction data could be parsed
+        const failureHtml = `<p style="color:red; font-weight:bold;">ERROR: No transaction summary table was found in the HTML report. The test may have failed to complete successfully.</p>`;
+        const professionalOverallMetricsHtml = formatOverallMetrics(rawHtml, runId, appName, headerData);
+        
+        const summaryTest = {
+            uuid: uuidv4(),
+            name: `Overall Performance Summary`,
+            fullName: `${appName}.${runId}-Summary`,
+            status: 'broken', // Set to 'broken' as parsing failed
+            stage: "finished",
+            start: overallStartTimeMs, 
+            stop: overallStopTimeMs,   
+            descriptionHtml: professionalOverallMetricsHtml + failureHtml,
+            labels: [
+                { name: "parentSuite", value: appName },
+                { name: "suite", value: runId },
+                { name: "subSuite", value: "Summary" },
+                { name: "feature", value: appName },
+                { name: "story", value: runId },
+            ],
+            steps: [{name: "Failed to parse transaction data.", status: "broken", stage: "finished"}],
+            attachments: []
+        };
+        const testFileName = `${summaryTest.uuid}-result.json`;
+        fs.writeFileSync(path.join(outputDir, testFileName), JSON.stringify(summaryTest, null, 2), 'utf8');
+
+        console.log(`\n⚠️ Generated BROKEN Allure result. Could not parse Transaction Summary Table from HTML.`);
+        return;
+    }
+    
+    // 3. Format the Overall Test Metrics using the new professional function
+    const professionalOverallMetricsHtml = formatOverallMetrics(rawHtml, runId, appName, headerData);
+
+    // 4. Prepare Attachment
+    const INPUT_ATTACHMENT_FILE = argv.html;
+    const attachmentHash = uuidv4();
+    const attachmentFinalPath = path.join(outputDir, `${attachmentHash}-attachment.html`);
+    fs.copyFileSync(INPUT_ATTACHMENT_FILE, attachmentFinalPath);
+
+    // 5. Construct the Final Description HTML (Overall Metrics + Transaction Table)
+    const finalDescriptionHtml = `
+        ${professionalOverallMetricsHtml}
+        ${generateSummaryTableHtml(metrics)}
+        <hr>
+        <p>For the full dashboard with all charts and detailed data, click the "Full Performance Dashboard (HTML)" tab below and download the attachment.</p>
+    `;
+
+    // 6. Create Overall Summary Test Case (Goal 2: No steps/minimal labels on overall summary)
+    // The overall status is 'failed' if *any* transaction metric is 'failed' (RT or Pass Count breached).
+    const overallStatus = metrics.some(m => m.status === 'failed') ? 'failed' : 
+                          metrics.some(m => m.status === 'broken') ? 'broken' : 'passed';
+
+    const summaryTest = {
+        uuid: uuidv4(),
+        name: `Overall Performance Summary`,
+        fullName: `${appName}.${runId}-Summary`,
+        status: overallStatus, 
+        stage: "finished",
+        start: overallStartTimeMs, 
+        stop: overallStopTimeMs,   
+        descriptionHtml: finalDescriptionHtml, // Contains the formatted table and metrics
+        
+        // Goal 2: Streamlined Labels
+        labels: [
+            { name: "parentSuite", value: appName },
+            { name: "suite", value: runId },
+            { name: "subSuite", value: "Overall" }, 
+            { name: "epic", value: "Performance Dashboard" }, 
+        ],
+        // Goal 2: Steps array REMOVED to keep the overview tab clean.
+        
+        attachments: [
+            { 
+                name: "Full Performance Dashboard (HTML)", 
+                type: mime.lookup('html'), 
+                source: `${attachmentHash}-attachment.html`
+            },
+        ]
+    };
+    
+    // 7. Create Individual Transaction Test Cases (Goal 1: Performance Metrics as Labels)
+    const transactionTests = metrics.map(m => {
+        // --- Synthetic Duration Logic ---
+        const p90RtMs = parseFloat(m.p90);
+        const synthStartTime = Date.now();
+        const synthStopTime = Math.round(synthStartTime + p90RtMs);
+        
+        // --- Goal 1: Generate custom metric labels ---
+        const metricLabels = [
+            // Allure hierarchy labels
+            { name: "parentSuite", value: appName },
+            { name: "suite", value: runId },
+            { name: "subSuite", value: "Transactions" },
+            
+            // Custom Performance Metric Labels (UPDATED FOR CORRECT TPH LOGIC)
+            { name: "P50 RT (ms)", value: m.p50 }, 
+            { name: "P90 RT (ms)", value: m.p90 }, 
+            { name: "P95 RT (ms)", value: m.p95 }, 
+            { name: "SLA P95 (ms)", value: m.slaP95 }, 
+            { name: "Min Pass Count (SLA)", value: m.minPassCount.toString() }, // NEW Label
+            { name: "Actual Pass Count", value: m.passCount.toString() },     // NEW Label
+            { name: "Total Transactions", value: m.totalCount.toString() },
+            { name: "Failed Transactions", value: m.failCount.toString() },
+            { name: "Transaction Name", value: m.trxName },
+        ];
+        
+        return {
+            uuid: uuidv4(),
+            name: `${m.trxName} (SLA RT:${m.slaP95}ms | Min Count:${m.minPassCount})`, 
+            fullName: `${appName}.${runId}-${m.trxName}`,
+            status: m.status, 
+            stage: "finished",
+            start: synthStartTime, 
+            stop: synthStopTime,   
+            // UPDATED Description
+            description: `**P95 Response Time SLA**: ${m.p95}ms (SLA: ${m.slaP95}ms)\n**Pass Count SLA**: ${m.passCount} (Min Required: ${m.minPassCount})\n**P90 Response Time**: ${m.p90}ms\n**Total Transactions**: ${m.totalCount} (Passed: ${m.passCount}, Failed: ${m.failCount})`,
+            statusDetails: { 
+                message: m.statusDetails,
+                trace: `P95 Status: ${m.slaP95Status}. Pass Count Status: ${m.passCountSlaStatus}. Fail Count: ${m.failCount}.` 
+            },
+            labels: metricLabels,
+            
+            // Detailed steps for validation
+            steps: [
+                {
+                    name: `Check P95 SLA: ${m.p95}ms <= ${m.slaP95}ms`,
+                    status: m.slaP95Status === 'Met' ? 'passed' : 'failed',
+                    stage: "finished",
+                    start: synthStartTime,
+                    stop: synthStartTime + 50
+                },
+                {
+                    // Update step to compare Pass Count to Min Pass Count
+                    name: `Check Pass Count SLA: ${m.passCount} >= ${m.minPassCount}`, 
+                    status: m.passCountSlaStatus === 'Passed' ? 'passed' : 'failed',
+                    stage: "finished",
+                    start: synthStartTime + 50,
+                    stop: synthStopTime - 50
+                },
+                {
+                    name: `Check Error Count: ${m.failCount} failed transactions`,
+                    status: m.failCount === 0 ? 'passed' : 'broken',
+                    stage: "finished",
+                    start: synthStopTime - 50,
+                    stop: synthStopTime
+                }
+            ],
+        };
+    });
+
+    // 8. Write Allure Result Files
+    const allTests = [summaryTest, ...transactionTests];
+    allTests.forEach(test => {
+        const testFileName = `${test.uuid}-result.json`;
+        fs.writeFileSync(path.join(outputDir, testFileName), JSON.stringify(test, null, 2), 'utf8');
+    });
+
+    // 9. Write Test Case Container and Executor Info
+    const container = {
+        uuid: uuidv4(),
+        name: runId,
+        children: allTests.map(t => t.uuid) 
+    };
+    fs.writeFileSync(path.join(outputDir, `${container.uuid}-container.json`), JSON.stringify(container, null, 2), 'utf8');
+
+    writeExecutorInfo(outputDir, appName, runId);
+
+    console.log(`\n✅ Successfully generated ${allTests.length} Allure result files for ${appName} (RunID: ${runId})`);
+    console.log(`Test Duration: ${durationStr} (${runDurationMs}ms)`);
+    console.log(`To view the report, run: npx allure open ${outputDir}`);
+
+} catch (e) {
+    console.error(`\n❌ An error occurred during Allure report generation: ${e.message}`);
+    process.exit(1);
+}
