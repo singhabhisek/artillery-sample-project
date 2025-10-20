@@ -40,15 +40,12 @@ on:
           - "false"
 
 env:
-  ARTILLERY_VERSION: "2.0.26"        # Artillery version to install
-  SCRIPTS_DIR: "./scripts"           # Folder containing YAML scenario and Python scripts
-  DATA_DIR: "./data"                 # Optional data folder
-  REPORT_DIR: "./artillery-results"  # Folder for runner JSONs, logs, and runner HTML
+  ARTILLERY_VERSION: "2.0.26"
+  SCRIPTS_DIR: "./scripts"
+  DATA_DIR: "./data"
+  REPORT_DIR: "./artillery-results"
 
 jobs:
-  # =========================================================
-  # Run Artillery on multiple runners
-  # =========================================================
   run-artillery:
     name: Run Artillery - Runner ${{ matrix.runner_index }}
     runs-on: ubuntu-latest
@@ -59,17 +56,11 @@ jobs:
         runner_index: [1, 2, 3, 4]
 
     steps:
-      # ---------------------------------------------------------------
-      # Step 0: Checkout repo
-      # ---------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ---------------------------------------------------------------
-      # Step 0.1: Optional machine info
-      # ---------------------------------------------------------------
       - name: Print machine details
         if: ${{ github.event.inputs.print_machine_info == 'true' }}
         shell: bash
@@ -82,36 +73,24 @@ jobs:
           curl -s https://ipapi.co/json/
           echo "========================"
 
-      # ---------------------------------------------------------------
-      # Step 1: Skip unused runners gracefully
-      # ---------------------------------------------------------------
       - name: Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           echo "Skipping runner ${{ matrix.runner_index }} (not selected)"
           exit 0
 
-      # ---------------------------------------------------------------
-      # Step 2: Setup Python before running tests
-      # ---------------------------------------------------------------
       - name: Setup Python
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ---------------------------------------------------------------
-      # Step 3: Install Python dependencies
-      # ---------------------------------------------------------------
       - name: Install Python Dependencies
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas plotly numpy pyyaml
 
-      # ---------------------------------------------------------------
-      # Step 4: Check scenario YAML exists
-      # ---------------------------------------------------------------
       - name: Check scenario YAML exists
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -123,18 +102,12 @@ jobs:
             echo "Found scenario file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
           fi
 
-      # ---------------------------------------------------------------
-      # Step 5: Setup Node.js for Artillery
-      # ---------------------------------------------------------------
       - name: Setup Node.js
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # ---------------------------------------------------------------
-      # Step 6: Install Artillery and plugin
-      # ---------------------------------------------------------------
       - name: Install Artillery + Plugin
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
@@ -142,9 +115,6 @@ jobs:
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
 
-      # ---------------------------------------------------------------
-      # Step 7: Run Artillery test and generate JSON + HTML
-      # ---------------------------------------------------------------
       - name: Run Artillery Test
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         id: run_test
@@ -152,18 +122,15 @@ jobs:
         run: |
           mkdir -p "${{ env.REPORT_DIR }}"
 
-          # Timestamp and random suffix for unique filenames
           TIMESTAMP=$(date +%Y%m%d)
           RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
 
-          # Determine test name
           if [ -z "${{ github.event.inputs.test_name }}" ]; then
             TEST_NAME="test-$TIMESTAMP"
           else
             TEST_NAME="${{ github.event.inputs.test_name }}"
           fi
 
-          # Output JSON and HTML filenames
           RESULT_JSON="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}.json"
           RESULT_HTML="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}-full.html"
 
@@ -175,46 +142,37 @@ jobs:
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
           --output "${{ env.REPORT_DIR }}/$RESULT_JSON" --quiet
 
-          # Generate Artillery built-in HTML
           npx artillery report "${{ env.REPORT_DIR }}/$RESULT_JSON" --output "${{ env.REPORT_DIR }}/$RESULT_HTML"
 
-          # Save outputs as GitHub Action outputs
           echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT
           echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
 
-      # ---------------------------------------------------------------
-      # Step 8: Generate runner-specific Python dashboard
-      # ---------------------------------------------------------------
+      # === Modified Section: tolerate Python errors and always upload artifacts ===
       - name: Generate Python dashboard for this runner
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        continue-on-error: true
         shell: bash
         run: |
           RUNNER_HTML="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-dashboard.html"
+          echo "Generating dashboard for runner ${{ matrix.runner_index }}..."
           python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
             --json "${{ env.REPORT_DIR }}/${{ steps.run_test.outputs.result_json }}" \
             --yaml "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
-            --output "$RUNNER_HTML"
-          echo "Generated Python dashboard for runner ${{ matrix.runner_index }}: $RUNNER_HTML"
+            --output "$RUNNER_HTML" || echo "⚠️ Python script failed, continuing workflow"
+          echo "Generated Python dashboard (if successful): $RUNNER_HTML"
 
-      # ---------------------------------------------------------------
-      # Step 9: Package JSON, logs, and runner HTML into a ZIP
-      # ---------------------------------------------------------------
       - name: Package Artillery results into ZIP
-        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        if: always()
         shell: bash
         run: |
           ZIP_NAME="runner-${{ matrix.runner_index }}-results.zip"
           mkdir -p upload
-          zip -r "upload/$ZIP_NAME" "${{ env.REPORT_DIR }}/$RESULT_JSON" \
-                                  "${{ env.REPORT_DIR }}/logs" \
-                                  "${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-dashboard.html"
+          echo "Packaging available files for runner ${{ matrix.runner_index }}..."
+          zip -r "upload/$ZIP_NAME" "${{ env.REPORT_DIR }}" || echo "⚠️ ZIP packaging encountered a warning"
           echo "Packaged runner ZIP: upload/$ZIP_NAME"
 
-      # ---------------------------------------------------------------
-      # Step 10: Upload runner ZIP artifact
-      # ---------------------------------------------------------------
       - name: Upload runner artifact
-        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: artillery-results-runner-${{ matrix.runner_index }}
@@ -222,7 +180,7 @@ jobs:
         continue-on-error: true
 
   # =========================================================
-  # Aggregate reports (after all runners complete)
+  # Aggregate reports
   # =========================================================
   aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -230,19 +188,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Download all runner artifacts
       - name: Download all runner artifacts
         uses: actions/download-artifact@v4
         with:
           path: artillery-results
 
-      # Extract all runner ZIPs
       - name: Extract all runner ZIPs
         shell: bash
         run: |
@@ -254,7 +209,6 @@ jobs:
             unzip -o "$zipfile" -d combined-results/"$foldername"
           done
 
-      # Determine test name for consolidated files
       - name: Determine test name for consolidated files
         id: test_name
         shell: bash
@@ -266,7 +220,6 @@ jobs:
           fi
           echo "consolidated_test_name=$CONSOLIDATED_NAME" >> $GITHUB_OUTPUT
 
-      # Collect all JSON files
       - name: Collect all JSON filenames
         id: collect_jsons
         shell: bash
@@ -279,45 +232,42 @@ jobs:
           fi
           echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
 
-      # Setup Python
       - name: Setup Python
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # Install Python dependencies
       - name: Install Python Dependencies
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
 
-      # Generate final consolidated dashboard
       - name: Generate consolidated Python dashboard
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         shell: bash
+        continue-on-error: true
         run: |
           FINAL_HTML="${{ steps.test_name.outputs.consolidated_test_name }}-consolidated-dashboard.html"
           python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
             --json "${{ steps.collect_jsons.outputs.json_files }}" \
             --yaml "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
-            --output "$FINAL_HTML"
+            --output "$FINAL_HTML" || echo "⚠️ Python consolidation failed, continuing."
 
-      # Package all runner ZIPs + final dashboard into one ZIP
       - name: Package consolidated artifacts
-        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
+        if: always()
         shell: bash
         run: |
           mkdir -p final-upload
-          cp artillery-results/**/*.zip final-upload/
-          cp "${{ steps.test_name.outputs.consolidated_test_name }}-consolidated-dashboard.html" final-upload/
-          zip -r "${{ steps.test_name.outputs.consolidated_test_name }}-consolidated-results.zip" final-upload/
+          cp artillery-results/**/*.zip final-upload/ || true
+          cp *.html final-upload/ || true
+          zip -r "consolidated-results.zip" final-upload/
+          echo "Packaged all results into consolidated-results.zip"
 
-      # Upload consolidated ZIP
       - name: Upload consolidated artifacts
-        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: consolidated-artillery-results
-          path: "${{ steps.test_name.outputs.consolidated_test_name }}-consolidated-results.zip"
+          path: consolidated-results.zip
