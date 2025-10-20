@@ -45,10 +45,10 @@ env:
   DATA_DIR: "./data"
   REPORT_DIR: "./artillery-results"
 
-# =========================================================
-# 🧹 Cleanup Job (runs ONLY if test_type == cleanup)
-# =========================================================
 jobs:
+  # =========================================================
+  # 🧹 Cleanup Job (runs ONLY when test_type == cleanup)
+  # =========================================================
   cleanup:
     if: ${{ github.event.inputs.test_type == 'cleanup' }}
     name: Cleanup Old Reports
@@ -58,19 +58,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Delete old artifacts from Actions storage
-        uses: geekyeggo/delete-artifact@v4
-        with:
-          age: ${{ github.event.inputs.cleanup_days }}d
-        continue-on-error: true
-
-      - name: Confirm cleanup
+      # List artifacts and clean up based on retention
+      - name: Delete old artifacts via REST API
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DAYS: ${{ github.event.inputs.cleanup_days }}
         run: |
-          echo "✅ Cleanup complete. Deleted artifacts older than ${{ github.event.inputs.cleanup_days }} days."
+          echo "🔍 Checking for artifacts older than $DAYS days to delete..."
+          cutoff_date=$(date -d "$DAYS days ago" --utc +%s)
+          gh api -H "Accept: application/vnd.github+json" /repos/$REPO/actions/artifacts --paginate \
+            | jq -r '.artifacts[] | [.name, .id, .created_at] | @tsv' \
+            | while IFS=$'\t' read -r name id created_at; do
+                created_epoch=$(date -d "$created_at" --utc +%s)
+                if [ "$created_epoch" -lt "$cutoff_date" ]; then
+                  echo "🗑️ Deleting artifact: $name (ID: $id)"
+                  gh api --method DELETE /repos/$REPO/actions/artifacts/$id || true
+                fi
+              done
+          echo "✅ Cleanup complete for artifacts older than $DAYS days."
 
-# =========================================================
-# 🧪 Run Artillery on multiple runners (skipped if cleanup)
-# =========================================================
+  # =========================================================
+  # 🧪 Run Artillery on multiple runners (skipped if cleanup)
+  # =========================================================
   run-artillery:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
     name: Run Artillery - Runner ${{ matrix.runner_index }}
@@ -82,17 +92,13 @@ jobs:
         runner_index: [1, 2, 3, 4]
 
     steps:
-      # ---------------------------------------------------------------
       # Step 0: Checkout repository
-      # ---------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ---------------------------------------------------------------
       # Step 0.1: Optional machine info
-      # ---------------------------------------------------------------
       - name: Print machine details
         if: ${{ github.event.inputs.print_machine_info == 'true' }}
         shell: bash
@@ -106,36 +112,28 @@ jobs:
           curl -s https://ipapi.co/json/ || echo "Location lookup failed"
           echo "========================"
 
-      # ---------------------------------------------------------------
       # Step 1: Skip unused runners gracefully
-      # ---------------------------------------------------------------
       - name: Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           echo "Skipping runner ${{ matrix.runner_index }} (not selected)"
           exit 0
 
-      # ---------------------------------------------------------------
       # Step 2: Setup Python before running tests
-      # ---------------------------------------------------------------
       - name: Setup Python
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ---------------------------------------------------------------
       # Step 3: Install Python dependencies
-      # ---------------------------------------------------------------
       - name: Install Python Dependencies
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas plotly numpy pyyaml
 
-      # ---------------------------------------------------------------
       # Step 4: Check scenario YAML exists
-      # ---------------------------------------------------------------
       - name: Check scenario YAML exists
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -147,18 +145,14 @@ jobs:
             echo "Found scenario file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
           fi
 
-      # ---------------------------------------------------------------
       # Step 5: Setup Node.js for Artillery
-      # ---------------------------------------------------------------
       - name: Setup Node.js
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # ---------------------------------------------------------------
       # Step 6: Install Artillery and plugin
-      # ---------------------------------------------------------------
       - name: Install Artillery + Plugin
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
@@ -166,9 +160,7 @@ jobs:
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
 
-      # ---------------------------------------------------------------
       # Step 7: Run Artillery test and generate JSON + HTML
-      # ---------------------------------------------------------------
       - name: Run Artillery Test
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         id: run_test
@@ -177,32 +169,24 @@ jobs:
           mkdir -p "${{ env.REPORT_DIR }}"
           TIMESTAMP=$(date +%Y%m%d)
           RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
-
           if [ -z "${{ github.event.inputs.test_name }}" ]; then
             TEST_NAME="test-$TIMESTAMP"
           else
             TEST_NAME="${{ github.event.inputs.test_name }}"
           fi
-
           RESULT_JSON="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}.json"
           RESULT_HTML="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}-full.html"
-
           echo "Running Artillery test, output JSON: $RESULT_JSON"
-
           ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
           --output "${{ env.REPORT_DIR }}/$RESULT_JSON" --quiet
-
           npx artillery report "${{ env.REPORT_DIR }}/$RESULT_JSON" --output "${{ env.REPORT_DIR }}/$RESULT_HTML"
-
           echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT
           echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
 
-      # ---------------------------------------------------------------
       # Step 8: Generate runner-specific Python dashboard
-      # ---------------------------------------------------------------
       - name: Generate Python dashboard for this runner
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -214,9 +198,7 @@ jobs:
             --output "$RUNNER_HTML"
           echo "Generated Python dashboard for runner ${{ matrix.runner_index }}: $RUNNER_HTML"
 
-      # ---------------------------------------------------------------
       # Step 9: Package results into ZIP
-      # ---------------------------------------------------------------
       - name: Package Artillery results into ZIP
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -228,9 +210,7 @@ jobs:
                                   "${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-dashboard.html"
           echo "Packaged runner ZIP: upload/$ZIP_NAME"
 
-      # ---------------------------------------------------------------
       # Step 10: Upload runner ZIP artifact
-      # ---------------------------------------------------------------
       - name: Upload runner artifact
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/upload-artifact@v4
@@ -248,7 +228,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # (same aggregation logic you already had — unchanged)
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
