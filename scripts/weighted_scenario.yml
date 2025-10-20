@@ -12,40 +12,32 @@ config:
     headers:
       Content-Type: "application/json"
   phases:
-    - duration: 30
-      arrivalRate: 5
-      name: "Warm-up"
-    - duration: 60
-      arrivalRate: 5
-      target: 70
-      name: "RampUp_to_7_in_1min"
-    - duration: 1200
-      arrivalRate: 70
-      name: "SS_7_TPS_2min"
-    - duration: 120
-      arrivalRate: 70
-      target: 140
-      name: "RampUp_to_14"
-    - duration: 1200
-      arrivalRate: 140
-      name: "SS_14_TPS_2min"
     - duration: 300
-      arrivalRate: 140
-      target: 250
-      name: "RampUp_to_250"
-    - duration: 120
-      arrivalRate: 250
-      target: 150
-      name: "RamDown_25_to_15"
+      arrivalRate: 150
+      name: "Warm-up"
     - duration: 600
       arrivalRate: 150
-      name: "SS_15_TPS_2min"
+      name: "150TPS"
+    - duration: 300
+      arrivalRate: 150
+      target: 300
+      name: "RampUp_to_300"
+    - duration: 600
+      arrivalRate: 300
+      name: "SS_300_TPS"
+    - duration: 60
+      arrivalRate: 300
+      target: 450
+      name: "RampUp_to_450"
+    - duration: 420
+      arrivalRate: 450
+      name: "450_TPS_2min"
   thresholds:
     http_req_failed: ['rate<0.05']
 
 scenarios:
   - name: "post-orders"
-    weight: 15
+    weight: 100
     flow:
       - post:
           url: "https://orders-994656192388.us-central1.run.app/orders"
@@ -59,56 +51,57 @@ scenarios:
           expect:
             statusCode: 200
 
-  - name: "post-payments"
-    weight: 10
-    flow:
-      - post:
-          url: "https://payments-994656192388.us-central1.run.app/payments"
-          json:
-            orderId: "o-123"
-            amount: 245
-            currency: "USD"
-            paymentMethod: "card"
-          expect:
-            statusCode: 200
+  # - name: "post-payments"
+  #   weight: 10
+  #   flow:
+  #     - post:
+  #         url: "https://payments-994656192388.us-central1.run.app/payments"
+  #         json:
+  #           orderId: "o-123"
+  #           amount: 245
+  #           currency: "USD"
+  #           paymentMethod: "card"
+  #         expect:
+  #           statusCode: 200
 
-  - name: "get-users"
-    weight: 80
-    flow:
-      - get:
-          url: "https://users-nafj7uberq-uc.a.run.app"
-          expect:
-            statusCode: 200
+  # - name: "get-users"
+  #   weight: 80
+  #   flow:
+  #     - get:
+  #         url: "https://users-nafj7uberq-uc.a.run.app"
+  #         expect:
+  #           statusCode: 200
 
-  - name: "get-random-error"
-    weight: 20
-    flow:
-      - get:
-          url: "https://random-error-api-994656192388.us-central1.run.app"
-          expect:
-            statusCode: 200
+  # - name: "get-random-error"
+  #   weight: 20
+  #   flow:
+  #     - get:
+  #         url: "https://random-error-api-994656192388.us-central1.run.app"
+  #         expect:
+  #           statusCode: 200
 
-  - name: "get-recommendations"
-    weight: 100
-    flow:
-      - get:
-          url: "https://recommendations-nafj7uberq-uc.a.run.app"
-          expect:
-            statusCode: 200
+  # - name: "get-recommendations"
+  #   weight: 100
+  #   flow:
+  #     - get:
+  #         url: "https://recommendations-nafj7uberq-uc.a.run.app"
+  #         expect:
+  #           statusCode: 200
 
-  - name: "get-analytics"
-    weight: 50
-    flow:
-      - get:
-          url: "https://analytics-nafj7uberq-uc.a.run.app"
-          expect:
-            statusCode: 200
+  # - name: "get-analytics"
+  #   weight: 50
+  #   flow:
+  #     - get:
+  #         url: "https://analytics-nafj7uberq-uc.a.run.app"
+  #         expect:
+  #           statusCode: 200
 
-  - name: "get-reports"
-    weight: 60
-    flow:
-      - get:
-          url: "https://reports-nafj7uberq-uc.a.run.app"
-          expect:
-            statusCode: 200
+  # - name: "get-reports"
+  #   weight: 60
+  #   flow:
+  #     - get:
+  #         url: "https://reports-nafj7uberq-uc.a.run.app"
+  #         expect:
+  #           statusCode: 200
+
 
