@@ -22,7 +22,7 @@ on:
       scenario_file:
         description: "YAML file for Artillery test (e.g., cloudrun-loadtest.yml)"
         required: true
-        default: "cloudrun-loadtest.yml"
+        default: "weighted_scenario.yml,cloudrun-loadtest.yml"
       test_name:
         description: "Optional test name; if blank, YYYYMMDD will be used"
         required: false
