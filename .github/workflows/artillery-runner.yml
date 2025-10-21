@@ -142,7 +142,7 @@ jobs:
               cpu=$(mpstat 1 1 | awk '/Average/ {print $3","$5","$12}')
               mem=$(free -m | awk '/Mem:/ {print $3","$4}')
               echo "$ts,$cpu,$mem" >> $LOG_FILE
-              sleep 300
+              sleep 180
             done
           }
 
