@@ -58,8 +58,22 @@ env:
   REPORT_DIR: "./artillery-results"
 
 jobs:
+
+  # ===============================
+  # Main Artillery Runner Job
+  # ===============================
   run-artillery:
-    name: Run Artillery - Runner ${{ matrix.runner_index }}
+
+    # -------------------------------
+    # Dynamically set job name based on user input
+    # Priority:
+    # 1. `run_name` input if provided
+    # 2. `test_name` input if provided
+    # 3. fallback to "test-YYYYMMDD"
+    # Append runner index to distinguish parallel jobs
+    # -------------------------------
+    name: ${{ github.event.inputs.run_name != '' && github.event.inputs.run_name || (github.event.inputs.test_name != '' && github.event.inputs.test_name || 'test-' + format('{0:04}{1:02}{2:02}', github.event.created_at | fromJSON | .year, github.event.created_at | fromJSON | .month, github.event.created_at | fromJSON | .day)) }} - Runner ${{ matrix.runner_index }}
+
     runs-on: ubuntu-latest
 
     strategy:
@@ -68,11 +82,18 @@ jobs:
         runner_index: [1, 2, 3, 4]
 
     steps:
+
+      # -------------------------------
+      # Checkout repository code
+      # -------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # -------------------------------
+      # Optional: Print machine info
+      # -------------------------------
       - name: Print machine details
         if: ${{ github.event.inputs.print_machine_info == 'true' }}
         shell: bash
@@ -85,24 +106,36 @@ jobs:
           curl -s https://ipapi.co/json/
           echo "========================"
 
+      # -------------------------------
+      # Skip runners not selected by user
+      # -------------------------------
       - name: Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           echo "Skipping runner ${{ matrix.runner_index }} (not selected)"
           exit 0
 
+      # -------------------------------
+      # Setup Python environment
+      # -------------------------------
       - name: Setup Python
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.13.1"
 
+      # -------------------------------
+      # Install Python dependencies
+      # -------------------------------
       - name: Install Python Dependencies
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas plotly numpy pyyaml
 
+      # -------------------------------
+      # Ensure scenario YAML exists
+      # -------------------------------
       - name: Check scenario YAML exists
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -114,12 +147,18 @@ jobs:
             echo "Found scenario file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
           fi
 
+      # -------------------------------
+      # Setup Node.js environment
+      # -------------------------------
       - name: Setup Node.js
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+      # -------------------------------
+      # Install Artillery and plugin
+      # -------------------------------
       - name: Install Artillery + Plugin
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
@@ -127,7 +166,9 @@ jobs:
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
 
-      # ===== Optional System Monitoring =====
+      # -------------------------------
+      # Optional System Monitoring
+      # -------------------------------
       - name: Start system monitoring (optional)
         if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -150,6 +191,9 @@ jobs:
           echo $! > /tmp/monitor_pid.txt
           echo "System monitoring started in background, logging every 5 minutes."
 
+      # -------------------------------
+      # Run Artillery test
+      # -------------------------------
       - name: Run Artillery Test
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         id: run_test
@@ -160,6 +204,7 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d)
           RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
 
+          # Determine TEST_NAME using priority
           if [ -n "${{ github.event.inputs.run_name }}" ]; then
             TEST_NAME="${{ github.event.inputs.run_name }}"
           elif [ -n "${{ github.event.inputs.test_name }}" ]; then
@@ -184,6 +229,9 @@ jobs:
           echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT
           echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
 
+      # -------------------------------
+      # Stop system monitoring (optional)
+      # -------------------------------
       - name: Stop system monitoring (optional)
         if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -194,6 +242,9 @@ jobs:
             echo "System monitoring stopped."
           fi
 
+      # -------------------------------
+      # Upload system monitoring logs (optional)
+      # -------------------------------
       - name: Upload system monitoring logs (optional)
         if: ${{ github.event.inputs.monitor_system == 'true' }}
         uses: actions/upload-artifact@v4
@@ -201,7 +252,9 @@ jobs:
           name: runner-${{ matrix.runner_index }}-system-logs
           path: ${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-system.log
 
-      # ===== Existing dashboard and artifact steps =====
+      # -------------------------------
+      # Generate Python dashboard for this runner
+      # -------------------------------
       - name: Generate Python dashboard for this runner
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         continue-on-error: true
@@ -215,6 +268,9 @@ jobs:
             --output "$RUNNER_HTML" || echo "⚠️ Python script failed, continuing workflow"
           echo "Generated Python dashboard (if successful): $RUNNER_HTML"
 
+      # -------------------------------
+      # Package Artillery results into ZIP
+      # -------------------------------
       - name: Package Artillery results into ZIP
         if: always()
         shell: bash
@@ -225,6 +281,9 @@ jobs:
           zip -r "upload/$ZIP_NAME" "${{ env.REPORT_DIR }}" || echo "⚠️ ZIP packaging encountered a warning"
           echo "Packaged runner ZIP: upload/$ZIP_NAME"
 
+      # -------------------------------
+      # Upload runner artifact
+      # -------------------------------
       - name: Upload runner artifact
         if: always()
         uses: actions/upload-artifact@v4
