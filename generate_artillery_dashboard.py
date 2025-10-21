@@ -1053,10 +1053,12 @@ html = f"""
                 
                     <div class="row mt-4">
                         <div class="col-12">
-                            {f'''
-                            <h6 class='mb-3'>Status Code Counts</h6>
-                            <div id='chart_codes_{{per_ep_data[ep]['safe_id']}}' style='height: 300px;'></div>
-                            ''' if SHOW_GRAPH_CODES else ''}
+                            {(
+                                 f"""
+                                 <h6 class='mb-3'>Status Code Counts</h6>
+                                 <div id='chart_codes_{per_ep_data[ep]['safe_id']}' style='height: 300px;'></div>
+                                 """
+                             ) if SHOW_GRAPH_CODES else ''}
                         </div>
                     </div>
                     
