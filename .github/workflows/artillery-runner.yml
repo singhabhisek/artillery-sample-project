@@ -57,23 +57,44 @@ env:
   DATA_DIR: "./data"
   REPORT_DIR: "./artillery-results"
 
+# =========================================================
+# Pre-step job to calculate the final test name
+# =========================================================
 jobs:
+  set-test-name:
+    runs-on: ubuntu-latest
+    outputs:
+      final_test_name: ${{ steps.determine.outputs.final_test_name }}
 
-  # ===============================
-  # Main Artillery Runner Job
-  # ===============================
+    steps:
+      # -------------------------------
+      # Determine final test name based on user input
+      # Priority:
+      # 1. run_name input
+      # 2. test_name input
+      # 3. fallback to "test-YYYYMMDD"
+      # -------------------------------
+      - id: determine
+        run: |
+          TIMESTAMP=$(date +%Y%m%d)
+          if [ -n "${{ github.event.inputs.run_name }}" ]; then
+            FINAL_NAME="${{ github.event.inputs.run_name }}"
+          elif [ -n "${{ github.event.inputs.test_name }}" ]; then
+            FINAL_NAME="${{ github.event.inputs.test_name }}"
+          else
+            FINAL_NAME="test-$TIMESTAMP"
+          fi
+          echo "final_test_name=$FINAL_NAME" >> $GITHUB_OUTPUT
+
+# =========================================================
+# Main Artillery Runner Job
+# =========================================================
   run-artillery:
-
     # -------------------------------
-    # Dynamically set job name based on user input
-    # Priority:
-    # 1. `run_name` input if provided
-    # 2. `test_name` input if provided
-    # 3. fallback to "test-YYYYMMDD"
-    # Append runner index to distinguish parallel jobs
+    # Use the pre-calculated test name in job display
+    # Appends runner index to differentiate parallel jobs
     # -------------------------------
-    name: ${{ github.event.inputs.run_name != '' && github.event.inputs.run_name || (github.event.inputs.test_name != '' && github.event.inputs.test_name || 'test-' + format('{0:04}{1:02}{2:02}', github.event.created_at | fromJSON | .year, github.event.created_at | fromJSON | .month, github.event.created_at | fromJSON | .day)) }} - Runner ${{ matrix.runner_index }}
-
+    name: ${{ needs.set-test-name.outputs.final_test_name }} - Runner ${{ matrix.runner_index }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -204,14 +225,8 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d)
           RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
 
-          # Determine TEST_NAME using priority
-          if [ -n "${{ github.event.inputs.run_name }}" ]; then
-            TEST_NAME="${{ github.event.inputs.run_name }}"
-          elif [ -n "${{ github.event.inputs.test_name }}" ]; then
-            TEST_NAME="${{ github.event.inputs.test_name }}"
-          else
-            TEST_NAME="test-$TIMESTAMP"
-          fi
+          # Use the pre-calculated test name from the set-test-name job
+          TEST_NAME="${{ needs.set-test-name.outputs.final_test_name }}"
 
           RESULT_JSON="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}.json"
           RESULT_HTML="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}-full.html"
@@ -297,7 +312,7 @@ jobs:
   # =========================================================
   aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
-    needs: run-artillery
+    needs: [set-test-name, run-artillery]
     runs-on: ubuntu-latest
 
     steps:
