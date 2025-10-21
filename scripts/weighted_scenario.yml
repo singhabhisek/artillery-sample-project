@@ -15,7 +15,7 @@ config:
     - duration: 300
       arrivalRate: 300
       name: "Warm-up"
-    - duration: 300
+    - duration: 600
       arrivalRate: 300
       name: "150TPS"
     # - duration: 300
@@ -103,6 +103,7 @@ scenarios:
   #         url: "https://reports-nafj7uberq-uc.a.run.app"
   #         expect:
   #           statusCode: 200
+
 
 
 
