@@ -12,10 +12,10 @@ config:
     headers:
       Content-Type: "application/json"
   phases:
-    - duration: 300
+    - duration: 30
       arrivalRate: 150
       name: "Warm-up"
-    - duration: 600
+    - duration: 120
       arrivalRate: 150
       name: "150TPS"
     # - duration: 300
@@ -103,6 +103,7 @@ scenarios:
   #         url: "https://reports-nafj7uberq-uc.a.run.app"
   #         expect:
   #           statusCode: 200
+
 
 
 
