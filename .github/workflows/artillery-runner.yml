@@ -27,6 +27,18 @@ on:
         description: "Optional test name; if blank, YYYYMMDD will be used"
         required: false
         default: ""
+      run_name:
+        description: "Optional custom run name; overrides test_name if provided"
+        required: false
+        default: ""
+      monitor_system:
+        description: "Monitor runner CPU/memory usage during test? true/false"
+        required: false
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "false"
       cleanup_days:
         description: "Delete reports older than X days (cleanup mode)"
         required: false
@@ -115,6 +127,29 @@ jobs:
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           artillery --version
 
+      # ===== Optional System Monitoring =====
+      - name: Start system monitoring (optional)
+        if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          mkdir -p "${{ env.REPORT_DIR }}"
+          LOG_FILE="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-system.log"
+          echo "timestamp,cpu_user,cpu_system,cpu_idle,mem_used,mem_free" > $LOG_FILE
+
+          monitor() {
+            while true; do
+              ts=$(date +"%Y-%m-%d %H:%M:%S")
+              cpu=$(mpstat 1 1 | awk '/Average/ {print $3","$5","$12}')
+              mem=$(free -m | awk '/Mem:/ {print $3","$4}')
+              echo "$ts,$cpu,$mem" >> $LOG_FILE
+              sleep 300
+            done
+          }
+
+          monitor &
+          echo $! > /tmp/monitor_pid.txt
+          echo "System monitoring started in background, logging every 5 minutes."
+
       - name: Run Artillery Test
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         id: run_test
@@ -125,10 +160,12 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d)
           RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
 
-          if [ -z "${{ github.event.inputs.test_name }}" ]; then
-            TEST_NAME="test-$TIMESTAMP"
-          else
+          if [ -n "${{ github.event.inputs.run_name }}" ]; then
+            TEST_NAME="${{ github.event.inputs.run_name }}"
+          elif [ -n "${{ github.event.inputs.test_name }}" ]; then
             TEST_NAME="${{ github.event.inputs.test_name }}"
+          else
+            TEST_NAME="test-$TIMESTAMP"
           fi
 
           RESULT_JSON="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}.json"
@@ -147,7 +184,24 @@ jobs:
           echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT
           echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
 
-      # === Modified Section: tolerate Python errors and always upload artifacts ===
+      - name: Stop system monitoring (optional)
+        if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          if [ -f /tmp/monitor_pid.txt ]; then
+            kill $(cat /tmp/monitor_pid.txt) || true
+            rm /tmp/monitor_pid.txt
+            echo "System monitoring stopped."
+          fi
+
+      - name: Upload system monitoring logs (optional)
+        if: ${{ github.event.inputs.monitor_system == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-${{ matrix.runner_index }}-system-logs
+          path: ${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-system.log
+
+      # ===== Existing dashboard and artifact steps =====
       - name: Generate Python dashboard for this runner
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         continue-on-error: true
