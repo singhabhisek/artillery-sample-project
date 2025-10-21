@@ -22,7 +22,7 @@ on:
       scenario_file:
         description: "YAML file for Artillery test (e.g., cloudrun-loadtest.yml)"
         required: true
-        default: "cloudrun-loadtest.yml"
+        default: "weighted_scenario.yml"
       test_name:
         description: "Optional test name; if blank, YYYYMMDD will be used"
         required: false
@@ -40,7 +40,7 @@ on:
           - "false"
 
 env:
-  ARTILLERY_VERSION: "2.0.26"
+  ARTILLERY_VERSION: "2.0.21"
   SCRIPTS_DIR: "./scripts"
   DATA_DIR: "./data"
   REPORT_DIR: "./artillery-results"
@@ -83,7 +83,7 @@ jobs:
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13.1"
 
       - name: Install Python Dependencies
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
@@ -236,7 +236,7 @@ jobs:
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13.1"
 
       - name: Install Python Dependencies
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
