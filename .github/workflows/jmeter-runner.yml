@@ -126,7 +126,7 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y openjdk-17-jdk wget unzip
-          wget https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${{ env.JMETER_VERSION }}.zip
+          wget -nv https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${{ env.JMETER_VERSION }}.zip
           unzip apache-jmeter-${{ env.JMETER_VERSION }}.zip
           export PATH=$PATH:$PWD/apache-jmeter-${{ env.JMETER_VERSION }}/bin
           jmeter --version
@@ -179,7 +179,7 @@ jobs:
           mkdir -p "$RESULT_DIR"
 
           echo "Running JMeter test..."
-          jmeter -n \
+          ./apache-jmeter-5.6.3/bin/jmeter -n \
             -t "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}" \
             -l "$RESULT_DIR/results.jtl" \
             -e -o "$RESULT_DIR/html-report"
