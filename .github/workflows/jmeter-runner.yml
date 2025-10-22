@@ -25,7 +25,7 @@ on:
       test_plan_file:
         description: "JMeter Test Plan (.jmx file)"
         required: true
-        default: "load_test_plan.jmx"
+        default: "High_TPS_Runner.jmx"
       test_name:
         description: "Optional test name; if blank, YYYYMMDD will be used"
         required: false
