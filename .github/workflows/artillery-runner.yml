@@ -4,7 +4,7 @@ name: "Artillery Load Test (Multi-Runner)"
 # Uses user-provided run_id if available, otherwise generates formatted descriptive name
 run-name: >
   Artillery Workflow: ${{ github.event.inputs.test_name }}
-  
+
 on:
   workflow_dispatch:
     inputs:
@@ -103,12 +103,11 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
-      fail-fast: false
+      fail-fast: false  # Continue all runners even if one fails
       matrix:
         runner_index: [1, 2, 3, 4]
 
     steps:
-
       # -------------------------------
       # Checkout repository code
       # -------------------------------
@@ -191,8 +190,6 @@ jobs:
           npm install -g artillery@${{ env.ARTILLERY_VERSION }}
           npm install --save-dev artillery-plugin-metrics-by-endpoint
           npm install @faker-js/faker
-          
-
           artillery --version
 
       # -------------------------------
@@ -245,7 +242,7 @@ jobs:
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
-          --output "${{ env.REPORT_DIR }}/$RESULT_JSON" 
+          --output "${{ env.REPORT_DIR }}/$RESULT_JSON"
 
           npx artillery report "${{ env.REPORT_DIR }}/$RESULT_JSON" --output "${{ env.REPORT_DIR }}/$RESULT_HTML"
 
@@ -280,7 +277,7 @@ jobs:
       # -------------------------------
       - name: Generate Python dashboard for this runner
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
-        continue-on-error: true
+        continue-on-error: true   # <-- Continue workflow even if Python dashboard fails
         shell: bash
         run: |
           RUNNER_HTML="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-dashboard.html"
@@ -295,7 +292,7 @@ jobs:
       # Package Artillery results into ZIP
       # -------------------------------
       - name: Package Artillery results into ZIP
-        if: always()
+        if: always()   # <-- Always run to ensure partial results are captured
         shell: bash
         run: |
           ZIP_NAME="runner-${{ matrix.runner_index }}-results.zip"
@@ -308,32 +305,42 @@ jobs:
       # Upload runner artifact
       # -------------------------------
       - name: Upload runner artifact
-        if: always()
+        if: always()   # <-- Ensure upload happens even if previous steps failed
         uses: actions/upload-artifact@v4
         with:
           name: artillery-results-runner-${{ matrix.runner_index }}
           path: upload/*.zip
         continue-on-error: true
 
-  # =========================================================
-  # Aggregate reports
-  # =========================================================
+# =========================================================
+# Aggregate reports (always run, even if some runners fail)
+# =========================================================
   aggregate-reports:
-    if: ${{ github.event.inputs.test_type != 'cleanup' }}
+    if: always()   # <-- Ensures aggregation runs regardless of errors/cancellations
     needs: [set-test-name, run-artillery]
     runs-on: ubuntu-latest
 
     steps:
+      # -------------------------------
+      # Checkout repository
+      # -------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # -------------------------------
+      # Download all runner artifacts
+      # -------------------------------
       - name: Download all runner artifacts
         uses: actions/download-artifact@v4
         with:
           path: artillery-results
+        continue-on-error: true   # <-- Continue even if some artifacts are missing
 
+      # -------------------------------
+      # Extract all runner ZIPs
+      # -------------------------------
       - name: Extract all runner ZIPs
         shell: bash
         run: |
@@ -345,6 +352,9 @@ jobs:
             unzip -o "$zipfile" -d combined-results/"$foldername"
           done
 
+      # -------------------------------
+      # Determine test name for consolidated files
+      # -------------------------------
       - name: Determine test name for consolidated files
         id: test_name
         shell: bash
@@ -356,6 +366,9 @@ jobs:
           fi
           echo "consolidated_test_name=$CONSOLIDATED_NAME" >> $GITHUB_OUTPUT
 
+      # -------------------------------
+      # Collect all JSON filenames
+      # -------------------------------
       - name: Collect all JSON filenames
         id: collect_jsons
         shell: bash
@@ -368,6 +381,9 @@ jobs:
           fi
           echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
 
+      # -------------------------------
+      # Setup Python for consolidation
+      # -------------------------------
       - name: Setup Python
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/setup-python@v5
@@ -380,10 +396,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
 
+      # -------------------------------
+      # Generate consolidated Python dashboard
+      # -------------------------------
       - name: Generate consolidated Python dashboard
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         shell: bash
-        continue-on-error: true
+        continue-on-error: true  # <-- Continue even if Python script fails
         run: |
           FINAL_HTML="${{ steps.test_name.outputs.consolidated_test_name }}-consolidated-dashboard.html"
           python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
@@ -391,6 +410,9 @@ jobs:
             --yaml "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
             --output "$FINAL_HTML" || echo "⚠️ Python consolidation failed, continuing."
 
+      # -------------------------------
+      # Package consolidated artifacts
+      # -------------------------------
       - name: Package consolidated artifacts
         if: always()
         shell: bash
@@ -401,6 +423,9 @@ jobs:
           zip -r "consolidated-results.zip" final-upload/
           echo "Packaged all results into consolidated-results.zip"
 
+      # -------------------------------
+      # Upload consolidated artifacts
+      # -------------------------------
       - name: Upload consolidated artifacts
         if: always()
         uses: actions/upload-artifact@v4
