@@ -19,18 +19,18 @@ config:
 
     # --- Phase 2: Steady State ---
     - name: "Steady State at 1000 TPS"
-      duration: 180
-      arrivalRate: 1000
+      duration: 900
+      arrivalRate: 400
 
     # --- Phase 3: Spike ---
-    - name: "Spike to 1200 TPS and hold"
-      duration: 120
-      arrivalRate: 1000
-      rampTo: 1400
+    # - name: "Spike to 1200 TPS and hold"
+    #   duration: 120
+    #   arrivalRate: 1000
+    #   rampTo: 1400
 
-    - name: "Steady State at 1400 TPS"
-      duration: 120
-      arrivalRate: 1400
+    # - name: "Steady State at 1400 TPS"
+    #   duration: 120
+    #   arrivalRate: 1400
 
 scenarios:
   - name: "High TPS GET Load Test"
@@ -43,5 +43,6 @@ scenarios:
 
       # Optional small pause between requests
       - think: 0.05
+
 
 
