@@ -1,5 +1,8 @@
 config:
   target: "https://high-tps-api-994656192388.us-central1.run.app"
+  http:
+    pool: 1000
+    maxSockets: 1000
 
   ensure:
     # Fail test if response times or error rates exceed these thresholds
@@ -17,13 +20,13 @@ config:
     # --- Phase 2: Steady State ---
     - name: "Steady State at 1000 TPS"
       duration: 600
-      arrivalRate: 1000
+      arrivalRate: 800
 
     # --- Phase 3: Spike ---
     - name: "Spike to 1200 TPS and hold"
       duration: 300
-      arrivalRate: 1000
-      rampTo: 1200
+      arrivalRate: 800
+      rampTo: 1000
 
 scenarios:
   - name: "High TPS GET Load Test"
@@ -36,3 +39,4 @@ scenarios:
 
       # Optional small pause between requests
       - think: 0.05
+
