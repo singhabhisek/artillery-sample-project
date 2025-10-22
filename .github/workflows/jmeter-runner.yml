@@ -124,10 +124,10 @@ jobs:
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y openjdk-17-jdk wget unzip
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq openjdk-17-jdk wget unzip
           wget -nv https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${{ env.JMETER_VERSION }}.zip
-          unzip apache-jmeter-${{ env.JMETER_VERSION }}.zip
+          unzip -q apache-jmeter-${{ env.JMETER_VERSION }}.zip
           export PATH=$PATH:$PWD/apache-jmeter-${{ env.JMETER_VERSION }}/bin
           jmeter --version
 
