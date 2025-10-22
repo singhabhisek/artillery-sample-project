@@ -245,7 +245,7 @@ jobs:
           API_KEY="${{ secrets.API_KEY }}" \
           AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
           npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
-          --output "${{ env.REPORT_DIR }}/$RESULT_JSON" --quiet
+          --output "${{ env.REPORT_DIR }}/$RESULT_JSON" 
 
           npx artillery report "${{ env.REPORT_DIR }}/$RESULT_JSON" --output "${{ env.REPORT_DIR }}/$RESULT_HTML"
 
