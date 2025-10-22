@@ -1,4 +1,4 @@
-name: "Artillery Load Test (Multi-Runner)"
+name: "Artillery Load Test (Multi-Runner Wrapper)"
 
 # Dynamic run-name shown in GitHub Actions UI
 # Uses user-provided run_id if available, otherwise generates formatted descriptive name
