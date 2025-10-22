@@ -190,6 +190,9 @@ jobs:
         run: |
           npm install -g artillery@${{ env.ARTILLERY_VERSION }}
           npm install --save-dev artillery-plugin-metrics-by-endpoint
+          npm install @faker-js/faker
+          
+
           artillery --version
 
       # -------------------------------
