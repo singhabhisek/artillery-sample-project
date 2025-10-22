@@ -1,0 +1,449 @@
+name: "Artillery Load Test (Multi-Runner Wrapper)"
+
+# Dynamic run-name shown in GitHub Actions UI
+# Uses user-provided run_id if available, otherwise generates formatted descriptive name
+run-name: >
+  Artillery Workflow: ${{ github.event.inputs.test_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: "Choose test type (e.g., load/cleanup)"
+        required: true
+        type: choice
+        options:
+          - load
+          - cleanup
+      runners_to_use:
+        description: "Number of parallel runners to use (1–4)"
+        required: true
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+      scenario_file:
+        description: "YAML file for Artillery test (e.g., cloudrun-loadtest.yml)"
+        required: true
+        default: "weighted_scenario.yml"
+      test_name:
+        description: "Optional test name; if blank, YYYYMMDD will be used"
+        required: false
+        default: ""
+      run_name:
+        description: "Optional custom run name; overrides test_name if provided"
+        required: false
+        default: ""
+      monitor_system:
+        description: "Monitor runner CPU/memory usage during test? true/false"
+        required: false
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "false"
+      cleanup_days:
+        description: "Delete reports older than X days (cleanup mode)"
+        required: false
+        default: "7"
+      print_machine_info:
+        description: "Set true to print machine details"
+        required: false
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+env:
+  ARTILLERY_VERSION: "2.0.21"
+  SCRIPTS_DIR: "./scripts"
+  DATA_DIR: "./data"
+  REPORT_DIR: "./artillery-results"
+
+# =========================================================
+# Pre-step job to calculate the final test name
+# =========================================================
+jobs:
+  set-test-name:
+    runs-on: ubuntu-latest
+    outputs:
+      final_test_name: ${{ steps.determine.outputs.final_test_name }}
+
+    steps:
+      # -------------------------------
+      # Determine final test name based on user input
+      # Priority:
+      # 1. run_name input
+      # 2. test_name input
+      # 3. fallback to "test-YYYYMMDD"
+      # -------------------------------
+      - id: determine
+        run: |
+          TIMESTAMP=$(date +%Y%m%d)
+          if [ -n "${{ github.event.inputs.run_name }}" ]; then
+            FINAL_NAME="${{ github.event.inputs.run_name }}"
+          elif [ -n "${{ github.event.inputs.test_name }}" ]; then
+            FINAL_NAME="${{ github.event.inputs.test_name }}"
+          else
+            FINAL_NAME="test-$TIMESTAMP"
+          fi
+          echo "final_test_name=$FINAL_NAME" >> $GITHUB_OUTPUT
+
+# =========================================================
+# Main Artillery Runner Job
+# =========================================================
+  run-artillery:
+    # -------------------------------
+    # Use the pre-calculated test name in job display
+    # Appends runner index to differentiate parallel jobs
+    # -------------------------------
+    name: ${{ needs.set-test-name.outputs.final_test_name }} - Runner ${{ matrix.runner_index }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false  # Continue all runners even if one fails
+      matrix:
+        runner_index: [1, 2, 3, 4]
+
+    steps:
+      # -------------------------------
+      # Checkout repository code
+      # -------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -------------------------------
+      # Optional: Print machine info
+      # -------------------------------
+      - name: Print machine details
+        if: ${{ github.event.inputs.print_machine_info == 'true' }}
+        shell: bash
+        run: |
+          echo "===== Machine Info ====="
+          echo "CPU cores: $(nproc)"
+          echo "Memory: $(free -h)"
+          echo "IP: $(curl -s ifconfig.me)"
+          echo "Location info:"
+          curl -s https://ipapi.co/json/
+          echo "========================"
+
+      # -------------------------------
+      # Skip runners not selected by user
+      # -------------------------------
+      - name: Skip unused runner jobs
+        if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
+        run: |
+          echo "Skipping runner ${{ matrix.runner_index }} (not selected)"
+          exit 0
+
+      # -------------------------------
+      # Setup Python environment
+      # -------------------------------
+      - name: Setup Python
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.1"
+
+      # -------------------------------
+      # Install Python dependencies
+      # -------------------------------
+      - name: Install Python Dependencies
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas plotly numpy pyyaml
+
+      # -------------------------------
+      # Ensure scenario YAML exists
+      # -------------------------------
+      - name: Check scenario YAML exists
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          if [ ! -f "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" ]; then
+            echo "Scenario file not found!"
+            exit 1
+          else
+            echo "Found scenario file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
+          fi
+
+      # -------------------------------
+      # Setup Node.js environment
+      # -------------------------------
+      - name: Setup Node.js
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # -------------------------------
+      # Install Artillery and plugin
+      # -------------------------------
+      - name: Install Artillery + Plugin
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        run: |
+          npm install -g artillery@${{ env.ARTILLERY_VERSION }}
+          npm install --save-dev artillery-plugin-metrics-by-endpoint
+          npm install @faker-js/faker
+          artillery --version
+
+      # -------------------------------
+      # Optional System Monitoring
+      # -------------------------------
+      - name: Start system monitoring (optional)
+        if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          mkdir -p "${{ env.REPORT_DIR }}"
+          LOG_FILE="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-system.log"
+          echo "timestamp,cpu_user,cpu_system,cpu_idle,mem_used,mem_free" > $LOG_FILE
+
+          monitor() {
+            while true; do
+              ts=$(date +"%Y-%m-%d %H:%M:%S")
+              cpu=$(mpstat 1 1 | awk '/Average/ {print $3","$5","$12}')
+              mem=$(free -m | awk '/Mem:/ {print $3","$4}')
+              echo "$ts,$cpu,$mem" >> $LOG_FILE
+              sleep 180
+            done
+          }
+
+          monitor &
+          echo $! > /tmp/monitor_pid.txt
+          echo "System monitoring started in background, logging every 5 minutes."
+
+      # -------------------------------
+      # Run Artillery test
+      # -------------------------------
+      - name: Run Artillery Test
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        id: run_test
+        shell: bash
+        run: |
+          mkdir -p "${{ env.REPORT_DIR }}"
+
+          TIMESTAMP=$(date +%Y%m%d)
+          RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
+
+          # Use the pre-calculated test name from the set-test-name job
+          TEST_NAME="${{ needs.set-test-name.outputs.final_test_name }}"
+
+          RESULT_JSON="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}.json"
+          RESULT_HTML="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}-full.html"
+          INTERMEDIATE_JSON="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}-latest_stats.json"
+
+          echo "Running Artillery test using wrapper.js..."
+          echo "Final JSON: $RESULT_JSON"
+          echo "Intermediate stats: $INTERMEDIATE_JSON"
+
+          echo "Running Artillery test, output JSON: $RESULT_JSON"
+
+          ARTILLERY_TARGET="${{ vars.BASE_URL }}" \
+          API_KEY="${{ secrets.API_KEY }}" \
+          AUTH_HEADER="${{ secrets.AUTH_HEADER }}" \
+          # npx artillery run "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
+          # --output "${{ env.REPORT_DIR }}/$RESULT_JSON"
+          
+
+          # npx artillery report "${{ env.REPORT_DIR }}/$RESULT_JSON" --output "${{ env.REPORT_DIR }}/$RESULT_HTML"
+          # Call wrapper.js: it should accept scenario YAML, final JSON, and intermediate JSON
+          node "${{ env.SCRIPTS_DIR }}/wrapper.js" \
+            "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
+            "${{ env.REPORT_DIR }}/$RESULT_JSON" \
+            "${{ env.REPORT_DIR }}/$INTERMEDIATE_JSON"
+
+          # Generate HTML report from final JSON
+          npx artillery report "${{ env.REPORT_DIR }}/$RESULT_JSON" --output "${{ env.REPORT_DIR }}/$RESULT_HTML"
+
+          
+          echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT
+          echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
+
+      # -------------------------------
+      # Stop system monitoring (optional)
+      # -------------------------------
+      - name: Stop system monitoring (optional)
+        if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          if [ -f /tmp/monitor_pid.txt ]; then
+            kill $(cat /tmp/monitor_pid.txt) || true
+            rm /tmp/monitor_pid.txt
+            echo "System monitoring stopped."
+          fi
+
+      # -------------------------------
+      # Upload system monitoring logs (optional)
+      # -------------------------------
+      - name: Upload system monitoring logs (optional)
+        if: ${{ github.event.inputs.monitor_system == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-${{ matrix.runner_index }}-system-logs
+          path: ${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-system.log
+
+      # -------------------------------
+      # Generate Python dashboard for this runner
+      # -------------------------------
+      - name: Generate Python dashboard for this runner
+        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        continue-on-error: true   # <-- Continue workflow even if Python dashboard fails
+        shell: bash
+        run: |
+          RUNNER_HTML="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-dashboard.html"
+          echo "Generating dashboard for runner ${{ matrix.runner_index }}..."
+          python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
+            --json "${{ env.REPORT_DIR }}/${{ steps.run_test.outputs.result_json }}" \
+            --yaml "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
+            --output "$RUNNER_HTML" || echo "⚠️ Python script failed, continuing workflow"
+          echo "Generated Python dashboard (if successful): $RUNNER_HTML"
+
+      # -------------------------------
+      # Package Artillery results into ZIP
+      # -------------------------------
+      - name: Package Artillery results into ZIP
+        if: always()   # <-- Always run to ensure partial results are captured
+        shell: bash
+        run: |
+          ZIP_NAME="runner-${{ matrix.runner_index }}-results.zip"
+          mkdir -p upload
+          echo "Packaging available files for runner ${{ matrix.runner_index }}..."
+          zip -r "upload/$ZIP_NAME" "${{ env.REPORT_DIR }}" || echo "⚠️ ZIP packaging encountered a warning"
+          echo "Packaged runner ZIP: upload/$ZIP_NAME"
+
+      # -------------------------------
+      # Upload runner artifact
+      # -------------------------------
+      - name: Upload runner artifact
+        if: always()   # <-- Ensure upload happens even if previous steps failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: artillery-results-runner-${{ matrix.runner_index }}
+          path: upload/*.zip
+        continue-on-error: true
+
+# =========================================================
+# Aggregate reports (always run, even if some runners fail)
+# =========================================================
+  aggregate-reports:
+    if: always()   # <-- Ensures aggregation runs regardless of errors/cancellations
+    needs: [set-test-name, run-artillery]
+    runs-on: ubuntu-latest
+
+    steps:
+      # -------------------------------
+      # Checkout repository
+      # -------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -------------------------------
+      # Download all runner artifacts
+      # -------------------------------
+      - name: Download all runner artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artillery-results
+        continue-on-error: true   # <-- Continue even if some artifacts are missing
+
+      # -------------------------------
+      # Extract all runner ZIPs
+      # -------------------------------
+      - name: Extract all runner ZIPs
+        shell: bash
+        run: |
+          mkdir -p combined-results
+          for zipfile in artillery-results/**/*.zip; do
+            [ -f "$zipfile" ] || continue
+            foldername=$(basename "$zipfile" .zip)
+            mkdir -p combined-results/"$foldername"
+            unzip -o "$zipfile" -d combined-results/"$foldername"
+          done
+
+      # -------------------------------
+      # Determine test name for consolidated files
+      # -------------------------------
+      - name: Determine test name for consolidated files
+        id: test_name
+        shell: bash
+        run: |
+          if [ -z "${{ github.event.inputs.test_name }}" ]; then
+            CONSOLIDATED_NAME="test-$(date +%Y%m%d)"
+          else
+            CONSOLIDATED_NAME="${{ github.event.inputs.test_name }}"
+          fi
+          echo "consolidated_test_name=$CONSOLIDATED_NAME" >> $GITHUB_OUTPUT
+
+      # -------------------------------
+      # Collect all JSON filenames
+      # -------------------------------
+      - name: Collect all JSON filenames
+        id: collect_jsons
+        shell: bash
+        run: |
+          JSON_FILES=$(find combined-results -name '*.json' -type f | paste -sd "," -)
+          if [ -z "$JSON_FILES" ]; then
+            echo "No JSON files found. Skipping final dashboard generation."
+            echo "json_files=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
+
+      # -------------------------------
+      # Setup Python for consolidation
+      # -------------------------------
+      - name: Setup Python
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.1"
+
+      - name: Install Python Dependencies
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyyaml plotly numpy
+
+      # -------------------------------
+      # Generate consolidated Python dashboard
+      # -------------------------------
+      - name: Generate consolidated Python dashboard
+        if: ${{ steps.collect_jsons.outputs.json_files != '' }}
+        shell: bash
+        continue-on-error: true  # <-- Continue even if Python script fails
+        run: |
+          FINAL_HTML="${{ steps.test_name.outputs.consolidated_test_name }}-consolidated-dashboard.html"
+          python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
+            --json "${{ steps.collect_jsons.outputs.json_files }}" \
+            --yaml "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
+            --output "$FINAL_HTML" || echo "⚠️ Python consolidation failed, continuing."
+
+      # -------------------------------
+      # Package consolidated artifacts
+      # -------------------------------
+      - name: Package consolidated artifacts
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p final-upload
+          cp artillery-results/**/*.zip final-upload/ || true
+          cp *.html final-upload/ || true
+          zip -r "consolidated-results.zip" final-upload/
+          echo "Packaged all results into consolidated-results.zip"
+
+      # -------------------------------
+      # Upload consolidated artifacts
+      # -------------------------------
+      - name: Upload consolidated artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consolidated-artillery-results
+          path: consolidated-results.zip
