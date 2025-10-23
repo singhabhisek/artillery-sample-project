@@ -1,5 +1,5 @@
 # =========================================================
-# GitHub Actions workflow for multi-runner JMeter tests
+# GitHub Actions workflow for JMeter Load Tests
 # =========================================================
 # Features:
 # - Multiple parallel runners (1–4)
@@ -7,8 +7,8 @@
 # - Plugin support: dummy sampler, custom thread groups, filter results
 # - Optional system monitoring
 # - Aggregation: merge all JTLs and generate consolidated HTML
-# - Artifacts: per-runner zip + consolidated zip
-# - Early JMX file validation (before installing JMeter)
+# - Artifacts: per-runner ZIP + consolidated ZIP
+# - Cleanup job: deletes old artifacts/reports based on cleanup_days
 # - Sanitized test/run names to avoid special character issues
 # =========================================================
 
@@ -131,15 +131,11 @@ jobs:
         runner_index: [1, 2, 3, 4]
 
     steps:
-      # --------------------------------------
-      # Step: Checkout repository
-      # --------------------------------------
+      # Checkout repository
       - name: Checkout repository
-        uses: actions/checkout@v4  # Get repo files
+        uses: actions/checkout@v4
 
-      # --------------------------------------
-      # Step: Optional machine info
-      # --------------------------------------
+      # Optional machine info
       - name: Print machine details
         if: ${{ github.event.inputs.print_machine_info == 'true' }}
         shell: bash
@@ -152,18 +148,14 @@ jobs:
           curl -s https://ipapi.co/json/
           echo "========================"
 
-      # --------------------------------------
-      # Step: Skip runners not selected
-      # --------------------------------------
+      # Skip runners not selected
       - name: Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           echo "Skipping runner ${{ matrix.runner_index }} (not selected)"
           exit 0
 
-      # --------------------------------------
-      # Step: Early JMX validation
-      # --------------------------------------
+      # Early JMX validation
       - name: Verify JMeter test plan exists
         shell: bash
         run: |
@@ -173,9 +165,7 @@ jobs:
           fi
           echo "✅ Found JMX file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}"
 
-      # --------------------------------------
-      # Step: Install Java + JMeter + Plugins
-      # --------------------------------------
+      # Install Java + JMeter + Plugins
       - name: Install Java & JMeter with Plugins
         shell: bash
         run: |
@@ -198,9 +188,7 @@ jobs:
           $JMETER_HOME/bin/PluginsManagerCMD.sh install jpgc-dummy,jpgc-casutg,jpgc-filterresults
           echo "✅ Installed JMeter ${JMETER_VERSION} with plugins"
 
-      # --------------------------------------
-      # Step: Optional system monitoring
-      # --------------------------------------
+      # Optional system monitoring
       - name: Start System Monitoring (optional)
         if: ${{ github.event.inputs.monitor_system == 'true' }}
         shell: bash
@@ -220,9 +208,7 @@ jobs:
           monitor &
           echo $! > /tmp/monitor_pid.txt
 
-      # --------------------------------------
-      # Step: Run JMeter Test
-      # --------------------------------------
+      # Run JMeter test
       - name: Run JMeter Test
         id: run_test
         shell: bash
@@ -250,9 +236,7 @@ jobs:
           echo "result_dir=$RESULT_DIR" >> $GITHUB_OUTPUT
           echo "✅ Runner ${{ matrix.runner_index }} test completed."
 
-      # --------------------------------------
-      # Step: Stop monitoring
-      # --------------------------------------
+      # Stop system monitoring
       - name: Stop System Monitoring (optional)
         if: ${{ github.event.inputs.monitor_system == 'true' }}
         shell: bash
@@ -262,9 +246,7 @@ jobs:
             rm /tmp/monitor_pid.txt
           fi
 
-      # --------------------------------------
-      # Step: Package Runner Results
-      # --------------------------------------
+      # Package runner results
       - name: Package Runner Results
         if: always()
         shell: bash
@@ -274,9 +256,7 @@ jobs:
           zip -r "upload/$ZIP_NAME" "${{ steps.run_test.outputs.result_dir }}"
           echo "📦 Packaged: upload/$ZIP_NAME"
 
-      # --------------------------------------
-      # Step: Upload Runner Artifact
-      # --------------------------------------
+      # Upload runner artifact
       - name: Upload Runner Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -294,23 +274,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # --------------------------------------
       # Checkout repo
-      # --------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --------------------------------------
       # Download all runner artifacts
-      # --------------------------------------
       - name: Download all runner artifacts
         uses: actions/download-artifact@v4
         with:
           path: jmeter-results
 
-      # --------------------------------------
       # Extract all runner ZIPs
-      # --------------------------------------
       - name: Extract all runner ZIPs
         shell: bash
         run: |
@@ -322,10 +296,8 @@ jobs:
             unzip -qo "$zipfile" -d combined-results/"$foldername"
           done
 
-      # --------------------------------------
-      # Install Java + JMeter + Plugins
-      # --------------------------------------
-      - name: Install Java & JMeter with Plugins
+      # Install Java + JMeter + Plugins for consolidation
+      - name: Install Java & JMeter for consolidation
         shell: bash
         run: |
           sudo apt-get update -y -qq
@@ -339,9 +311,7 @@ jobs:
           java -cp $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar org.jmeterplugins.repository.PluginManagerCMDInstaller
           $JMETER_HOME/bin/PluginsManagerCMD.sh install jpgc-dummy,jpgc-casutg,jpgc-filterresults
 
-      # --------------------------------------
       # Merge all JTLs & generate consolidated HTML
-      # --------------------------------------
       - name: Generate Consolidated Results
         shell: bash
         run: |
@@ -354,29 +324,28 @@ jobs:
             exit 0
           fi
 
-          # Merge JTLs
-          MERGED_JTL="consolidated/all_results.jtl"
-          MERGED_ERRORS="consolidated/all_errors.jtl"
-          echo "Merging all runner results into $MERGED_JTL and $MERGED_ERRORS"
           # Merge main JTLs
+          MERGED_JTL="consolidated/all_results.jtl"
           head -n 1 $(echo $ALL_JTLS | awk '{print $1}') > $MERGED_JTL
           for file in $ALL_JTLS; do
             tail -n +2 "$file" >> $MERGED_JTL
           done
+
           # Merge error JTLs
-          head -n 1 $(echo $ALL_ERRORS | awk '{print $1}') > $MERGED_ERRORS
-          for file in $ALL_ERRORS; do
-            tail -n +2 "$file" >> $MERGED_ERRORS
-          done
+          MERGED_ERRORS="consolidated/all_errors.jtl"
+          if [ -n "$ALL_ERRORS" ]; then
+            head -n 1 $(echo $ALL_ERRORS | awk '{print $1}') > $MERGED_ERRORS
+            for file in $ALL_ERRORS; do
+              tail -n +2 "$file" >> $MERGED_ERRORS
+            done
+          fi
 
           # Generate consolidated HTML
           JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
           jmeter -g $MERGED_JTL -o consolidated/html-report
           echo "✅ Consolidated HTML report generated at consolidated/html-report"
 
-      # --------------------------------------
       # Package consolidated results
-      # --------------------------------------
       - name: Package Consolidated Artifacts
         if: always()
         shell: bash
@@ -387,12 +356,31 @@ jobs:
           zip -r "consolidated-results.zip" final-upload/
           echo "📦 Consolidated ZIP: consolidated-results.zip"
 
-      # --------------------------------------
       # Upload consolidated artifact
-      # --------------------------------------
       - name: Upload Consolidated Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: consolidated-jmeter-results
           path: consolidated-results.zip
+
+# =========================================================
+# Job 4: Cleanup Old Artifacts/Reports
+# =========================================================
+  cleanup-artifacts:
+    if: ${{ github.event.inputs.test_type == 'cleanup' || github.event.inputs.test_type == 'load' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cleanup old runner results
+        shell: bash
+        run: |
+          echo "🧹 Cleaning runner results older than ${{ github.event.inputs.cleanup_days }} days..."
+          find ${{ env.REPORT_DIR }} -maxdepth 1 -type d -name "*-runner-*" -mtime +${{ github.event.inputs.cleanup_days }} -exec rm -rf {} +
+          echo "✅ Old runner directories deleted."
+
+      - name: Cleanup old consolidated results
+        shell: bash
+        run: |
+          echo "🧹 Cleaning consolidated directories older than ${{ github.event.inputs.cleanup_days }} days..."
+          find consolidated -maxdepth 1 -type d -mtime +${{ github.event.inputs.cleanup_days }} -exec rm -rf {} + || true
+          echo "✅ Old consolidated directories deleted."
