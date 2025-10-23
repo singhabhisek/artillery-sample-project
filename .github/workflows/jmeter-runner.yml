@@ -48,10 +48,6 @@ on:
         description: "Optional custom run name; overrides test_name if provided"
         required: false
         default: ""
-      run_id:
-        description: "Optional run ID to append to the test name"
-        required: false
-        default: ""
       monitor_system:
         description: "Monitor runner CPU/memory usage during test? true/false"
         required: false
@@ -96,17 +92,15 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d)
 
           # Determine base name: run_name > test_name > fallback
-          if [ -n "${{ github.event.inputs.run_name }}" ]; then
-            BASE_NAME="${{ github.event.inputs.run_name }}"
-          elif [ -n "${{ github.event.inputs.test_name }}" ]; then
-            BASE_NAME="${{ github.event.inputs.test_name }}"
+          if [ -n "${{ github.event.inputs.test_name }}" ]; then
+            BASE_NAME="Jmeter_Test_${{ github.event.inputs.test_name }}"
           else
-            BASE_NAME="test-$TIMESTAMP"
+            BASE_NAME="test_$TIMESTAMP"
           fi
 
-          # Append optional run_id if provided
-          if [ -n "${{ github.event.inputs.run_id }}" ]; then
-            FINAL_NAME="${BASE_NAME}-run-${{ github.event.inputs.run_id }}"
+          # Append optional run_name if provided
+          if [ -n "${{ github.event.inputs.run_name }}" ]; then
+            FINAL_NAME="${BASE_NAME}_run_${{ github.event.inputs.run_name }}"
           else
             FINAL_NAME="$BASE_NAME"
           fi
