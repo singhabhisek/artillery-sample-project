@@ -56,19 +56,17 @@ on:
 
 env:
   JMETER_VERSION: "5.6.3"
-  JMETER_PLUGINS_MANAGER_VERSION: "1.8"
   SCRIPTS_DIR: "./scripts"
   REPORT_DIR: "./jmeter-results"
 
 # =========================================================
-# Pre-step: Determine final test name
+# Step 1: Determine Test Name
 # =========================================================
 jobs:
   set-test-name:
     runs-on: ubuntu-latest
     outputs:
       final_test_name: ${{ steps.determine.outputs.final_test_name }}
-
     steps:
       - id: determine
         run: |
@@ -83,12 +81,12 @@ jobs:
           echo "final_test_name=$FINAL_NAME" >> $GITHUB_OUTPUT
 
 # =========================================================
-# Main JMeter Runner Job
+# Step 2: JMeter Runner (Parallel)
 # =========================================================
   run-jmeter:
     name: ${{ needs.set-test-name.outputs.final_test_name }} - Runner ${{ matrix.runner_index }}
     runs-on: ubuntu-latest
-    needs: [set-test-name]
+    needs: set-test-name
 
     strategy:
       fail-fast: false
@@ -98,118 +96,136 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Print machine details
         if: ${{ github.event.inputs.print_machine_info == 'true' }}
+        shell: bash
         run: |
           echo "===== Machine Info ====="
           echo "CPU cores: $(nproc)"
           echo "Memory: $(free -h)"
           echo "IP: $(curl -s ifconfig.me)"
+          echo "Location info:"
           curl -s https://ipapi.co/json/
           echo "========================"
 
-      - name: Skip unused runners
+      - name: Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
         run: |
-          echo "Skipping runner ${{ matrix.runner_index }}"
+          echo "Skipping runner ${{ matrix.runner_index }} (not selected)"
           exit 0
 
-      # -------------------------------
-      # Install Java, JMeter, Plugins
-      # -------------------------------
-      - name: Install Java & JMeter with Plugins
-        if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq openjdk-17-jdk wget unzip
-
-          # Download JMeter
-          wget -nv https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${{ env.JMETER_VERSION }}.zip
-          unzip -q apache-jmeter-${{ env.JMETER_VERSION }}.zip
-
-          JMETER_HOME="$PWD/apache-jmeter-${{ env.JMETER_VERSION }}"
-
-          # Download Plugins Manager
-          wget -nv https://jmeter-plugins.org/get/ -O $JMETER_HOME/lib/ext/jmeter-plugins-manager-${{ env.JMETER_PLUGINS_MANAGER_VERSION }}.jar
-
-          # Download CMD tool for plugin install
-          wget -nv https://jmeter-plugins.org/files/JMeterPluginsCMD-latest.zip
-          unzip -q JMeterPluginsCMD-latest.zip -d $JMETER_HOME/lib/ext
-
-          # Add Plugins Manager command line tool
-          java -cp "$JMETER_HOME/lib/ext/jmeter-plugins-manager-${{ env.JMETER_PLUGINS_MANAGER_VERSION }}.jar" org.jmeterplugins.repository.PluginManagerCMDInstaller
-
-          # Install essential plugins
-          $JMETER_HOME/bin/PluginsManagerCMD.sh install \
-            jpgc-dummy \
-            jpgc-casutg \
-            jpgc-filterresults \
-            jpgc-graphs-basic \
-            jpgc-graphs-additional \
-            jpgc-json \
-            jpgc-tst \
-            jpgc-perfmon
-
-          export PATH=$PATH:$JMETER_HOME/bin
-          jmeter --version
-
-      # -------------------------------
-      # Verify JMX existence
-      # -------------------------------
-      - name: Check JMeter test plan exists
+      # --------------------------------------------------
+      # ✅ EARLY VALIDATION: Check JMX file before setup
+      # --------------------------------------------------
+      - name: Verify JMeter test plan exists (before install)
+        shell: bash
         run: |
           if [ ! -f "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}" ]; then
-            echo "Test plan not found!"
+            echo "❌ Test plan '${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}' not found!"
+            echo "Ensure your JMX file exists and is committed."
             exit 1
           fi
-          echo "Found test plan: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}"
+          echo "✅ Found JMX file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}"
 
-      # -------------------------------
-      # Run JMeter Test
-      # -------------------------------
-      - name: Run JMeter test plan
-        id: run_test
+      # --------------------------------------------------
+      # Install Java, JMeter & Required Plugins
+      # --------------------------------------------------
+      - name: Install Java & JMeter with Plugins
+        shell: bash
         run: |
-          JMETER_HOME="$PWD/apache-jmeter-${{ env.JMETER_VERSION }}"
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq openjdk-17-jdk wget unzip
+          wget -nv https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${{ env.JMETER_VERSION }}.zip
+          unzip -q apache-jmeter-${{ env.JMETER_VERSION }}.zip
+          JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
+          export PATH=$PATH:$JMETER_HOME/bin
+
+          # Install plugin manager + common plugins
+          wget -q https://jmeter-plugins.org/get/ -O $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar
+          java -cp $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar org.jmeterplugins.repository.PluginManagerCMDInstaller
+          $JMETER_HOME/bin/PluginsManagerCMD.sh install jpgc-dummy,jpgc-casutg,jpgc-filterresults
+          echo "✅ Installed JMeter ${JMETER_VERSION} with required plugins."
+
+      # --------------------------------------------------
+      # Optional Monitoring
+      # --------------------------------------------------
+      - name: Start System Monitoring (optional)
+        if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          mkdir -p "${{ env.REPORT_DIR }}"
+          LOG_FILE="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-system.log"
+          echo "timestamp,cpu_user,cpu_system,cpu_idle,mem_used,mem_free" > $LOG_FILE
+          monitor() {
+            while true; do
+              ts=$(date +"%Y-%m-%d %H:%M:%S")
+              cpu=$(mpstat 1 1 | awk '/Average/ {print $3","$5","$12}')
+              mem=$(free -m | awk '/Mem:/ {print $3","$4}')
+              echo "$ts,$cpu,$mem" >> $LOG_FILE
+              sleep 180
+            done
+          }
+          monitor &
+          echo $! > /tmp/monitor_pid.txt
+
+      # --------------------------------------------------
+      # Run JMeter Test (with error JTL)
+      # --------------------------------------------------
+      - name: Run JMeter Test
+        id: run_test
+        shell: bash
+        run: |
+          JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
+          export PATH=$PATH:$JMETER_HOME/bin
           TEST_NAME="${{ needs.set-test-name.outputs.final_test_name }}"
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           RESULT_DIR="${{ env.REPORT_DIR }}/${TEST_NAME}-runner-${{ matrix.runner_index }}-$TIMESTAMP"
           mkdir -p "$RESULT_DIR"
 
-          echo "Running JMeter Test on Runner ${{ matrix.runner_index }}..."
-          $JMETER_HOME/bin/jmeter -n \
+          RESULTS_JTL="$RESULT_DIR/results.jtl"
+          ERRORS_JTL="$RESULT_DIR/errors.jtl"
+
+          echo "🏃 Running JMeter test on Runner ${{ matrix.runner_index }}..."
+          jmeter -n \
             -t "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}" \
-            -l "$RESULT_DIR/results.jtl" \
-            -JerrorLogFile="$RESULT_DIR/error-results.jtl" \
-            -JerrorLogDir="$RESULT_DIR" \
-            -e -o "$RESULT_DIR/html-report" \
-            -Jjmeter.save.saveservice.autoflush=true
+            -l "$RESULTS_JTL" \
+            -JerrorFile="$ERRORS_JTL" \
+            -Jjmeter.save.saveservice.output_format=xml \
+            -Jjmeter.save.saveservice.autoflush=true \
+            -e -o "$RESULT_DIR/html-report"
 
           echo "result_dir=$RESULT_DIR" >> $GITHUB_OUTPUT
+          echo "✅ Runner ${{ matrix.runner_index }} test completed."
 
-      # -------------------------------
-      # Package & Upload Runner Artifacts
-      # -------------------------------
-      - name: Package results
+      - name: Stop System Monitoring (optional)
+        if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        shell: bash
+        run: |
+          if [ -f /tmp/monitor_pid.txt ]; then
+            kill $(cat /tmp/monitor_pid.txt) || true
+            rm /tmp/monitor_pid.txt
+          fi
+
+      - name: Package Runner Results
         if: always()
+        shell: bash
         run: |
           ZIP_NAME="runner-${{ matrix.runner_index }}-results.zip"
           mkdir -p upload
-          zip -r "upload/$ZIP_NAME" "${{ steps.run_test.outputs.result_dir }}" -i "*.jtl" -i "*.log" -i "*.csv" -i "*.txt" -i "*/html-report/*"
-          echo "Packaged: upload/$ZIP_NAME"
+          zip -r "upload/$ZIP_NAME" "${{ steps.run_test.outputs.result_dir }}"
+          echo "📦 Packaged: upload/$ZIP_NAME"
 
-      - name: Upload runner artifact
+      - name: Upload Runner Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: jmeter-results-runner-${{ matrix.runner_index }}
           path: upload/*.zip
+        continue-on-error: true
 
 # =========================================================
-# Aggregate Reports
+# Step 3: Aggregate Reports
 # =========================================================
   aggregate-reports:
     if: ${{ github.event.inputs.test_type != 'cleanup' }}
@@ -225,34 +241,64 @@ jobs:
         with:
           path: jmeter-results
 
-      - name: Extract all ZIPs
+      - name: Extract all runner ZIPs
+        shell: bash
         run: |
           mkdir -p combined-results
           for zipfile in jmeter-results/**/*.zip; do
             [ -f "$zipfile" ] || continue
-            folder=$(basename "$zipfile" .zip)
-            mkdir -p combined-results/"$folder"
-            unzip -q "$zipfile" -d combined-results/"$folder"
+            foldername=$(basename "$zipfile" .zip)
+            mkdir -p combined-results/"$foldername"
+            unzip -qo "$zipfile" -d combined-results/"$foldername"
           done
 
-      - name: Merge JTL and Error Logs
+      - name: Install Java & JMeter with Plugins
+        shell: bash
         run: |
-          mkdir -p consolidated
-          find combined-results -type f -name "results.jtl" -exec cat {} + > consolidated/merged-results.jtl
-          find combined-results -type f -name "error-results.jtl" -exec cat {} + > consolidated/merged-errors.jtl
-          find combined-results -type f -name "custom-errors.log" -exec cat {} + > consolidated/merged-custom-errors.log || true
-
-      - name: Generate consolidated HTML report
-        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq openjdk-17-jdk wget unzip
           wget -nv https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${{ env.JMETER_VERSION }}.zip
           unzip -q apache-jmeter-${{ env.JMETER_VERSION }}.zip
-          apache-jmeter-${{ env.JMETER_VERSION }}/bin/jmeter -g consolidated/merged-results.jtl -o consolidated/html-report
-          apache-jmeter-${{ env.JMETER_VERSION }}/bin/jmeter -g consolidated/merged-errors.jtl -o consolidated/html-errors-report || true
+          JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
+          export PATH=$PATH:$JMETER_HOME/bin
+          wget -q https://jmeter-plugins.org/get/ -O $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar
+          java -cp $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar org.jmeterplugins.repository.PluginManagerCMDInstaller
+          $JMETER_HOME/bin/PluginsManagerCMD.sh install jpgc-dummy,jpgc-casutg,jpgc-filterresults
 
-      - name: Package and upload consolidated results
-        if: always()
+      - name: Merge All JTL Files (including errors)
+        shell: bash
         run: |
-          zip -r consolidated-results.zip consolidated/
+          JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
+          MERGED_DIR=merged-results
+          mkdir -p $MERGED_DIR
+          MERGED_JTL=$MERGED_DIR/merged-results.jtl
+          echo "🔄 Merging all JTL files..."
+          find combined-results -type f -name "*.jtl" -exec cat {} + > "$MERGED_JTL"
+          echo "✅ Merged JTL created at $MERGED_JTL"
+
+      - name: Generate Consolidated JMeter HTML Report
+        shell: bash
+        run: |
+          JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
+          MERGED_DIR=merged-results
+          MERGED_JTL=$MERGED_DIR/merged-results.jtl
+          CONSOLIDATED_HTML=$MERGED_DIR/html-report
+          echo "📊 Generating consolidated HTML report..."
+          $JMETER_HOME/bin/jmeter -g "$MERGED_JTL" -o "$CONSOLIDATED_HTML" \
+            -Jjmeter.save.saveservice.autoflush=true
+          echo "✅ Consolidated HTML report generated at $CONSOLIDATED_HTML"
+
+      - name: Package and Upload Consolidated Artifacts
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p final-upload
+          cp -r merged-results final-upload/
+          zip -r consolidated-results.zip final-upload/
+          echo "📦 Packaged consolidated-results.zip"
+
+      - name: Upload Consolidated Artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: consolidated-jmeter-results
