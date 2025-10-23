@@ -17,7 +17,7 @@ name: "JMeter Load Test (Multi-Runner)"  # Name of the workflow
 # Workflow trigger
 # =========================================================
 run-name: >
-  JMeter Workflow: ${{ github.event.inputs.test_name }}  # Dynamic workflow run name based on input
+  JMeter Workflow: ${{ github.event.inputs.test_name }}
 
 on:
   workflow_dispatch:  # Manual trigger
