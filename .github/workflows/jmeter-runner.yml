@@ -2,26 +2,24 @@
 # GitHub Actions workflow for multi-runner JMeter tests
 # =========================================================
 # Features:
-# 1. Multiple parallel runners (1–4)
-# 2. Each runner generates JTL results, errors JTL, and HTML report
-# 3. Plugin support: dummy sampler, custom thread groups, filter plugins
-# 4. Optional system monitoring
-# 5. Aggregation: merge all JTLs and generate consolidated HTML
-# 6. Artifacts: per-runner zip + consolidated zip
-# 7. Early JMX file validation (before installing JMeter)
+# - Multiple parallel runners (1–4)
+# - Each runner generates main JTL, errors JTL, and HTML report
+# - Plugin support: dummy sampler, custom thread groups, filter results
+# - Optional system monitoring
+# - Aggregation: merge all JTLs and generate consolidated HTML
+# - Artifacts: per-runner zip + consolidated zip
+# - Early JMX file validation (before installing JMeter)
+# - Sanitized test/run names to avoid special character issues
 # =========================================================
 
-name: "JMeter Load Test (Multi-Runner)"  # Name of the workflow
+name: "JMeter Load Test (Multi-Runner)"
 
-# =========================================================
-# Workflow trigger
-# =========================================================
 run-name: >
   JMeter Workflow: ${{ github.event.inputs.test_name }}
 
 on:
-  workflow_dispatch:  # Manual trigger
-    inputs:  # Inputs for workflow_dispatch
+  workflow_dispatch:
+    inputs:
       test_type:
         description: "Choose test type (e.g., load/cleanup)"
         required: true
@@ -48,6 +46,10 @@ on:
         default: ""
       run_name:
         description: "Optional custom run name; overrides test_name if provided"
+        required: false
+        default: ""
+      run_id:
+        description: "Optional run ID to append to the test name"
         required: false
         default: ""
       monitor_system:
@@ -79,26 +81,42 @@ env:
   REPORT_DIR: "./jmeter-results"      # Base directory to store runner results
 
 # =========================================================
-# Job 1: Set final test name
+# Job 1: Set final sanitized test/run name
 # =========================================================
 jobs:
   set-test-name:
-    runs-on: ubuntu-latest  # OS runner
+    runs-on: ubuntu-latest
     outputs:
-      final_test_name: ${{ steps.determine.outputs.final_test_name }}  # Output for other jobs
+      final_test_name: ${{ steps.determine.outputs.final_test_name }}
+
     steps:
       - id: determine
         run: |
-          TIMESTAMP=$(date +%Y%m%d)  # Current date as fallback
-          # Determine final name based on inputs
+          # Get current date fallback
+          TIMESTAMP=$(date +%Y%m%d)
+
+          # Determine base name: run_name > test_name > fallback
           if [ -n "${{ github.event.inputs.run_name }}" ]; then
-            FINAL_NAME="${{ github.event.inputs.run_name }}"
+            BASE_NAME="${{ github.event.inputs.run_name }}"
           elif [ -n "${{ github.event.inputs.test_name }}" ]; then
-            FINAL_NAME="${{ github.event.inputs.test_name }}"
+            BASE_NAME="${{ github.event.inputs.test_name }}"
           else
-            FINAL_NAME="test-$TIMESTAMP"  # Default name
+            BASE_NAME="test-$TIMESTAMP"
           fi
-          echo "final_test_name=$FINAL_NAME" >> $GITHUB_OUTPUT  # Export output
+
+          # Append optional run_id if provided
+          if [ -n "${{ github.event.inputs.run_id }}" ]; then
+            FINAL_NAME="${BASE_NAME}-run-${{ github.event.inputs.run_id }}"
+          else
+            FINAL_NAME="$BASE_NAME"
+          fi
+
+          # Sanitize name: replace all non-alphanumeric characters with underscore
+          SAFE_NAME=$(echo "$FINAL_NAME" | sed 's/[^a-zA-Z0-9_-]/_/g')
+
+          # Export final sanitized name for downstream jobs
+          echo "final_test_name=$SAFE_NAME" >> $GITHUB_OUTPUT
+          echo "✅ Final sanitized test/run name: $SAFE_NAME"
 
 # =========================================================
 # Job 2: Run JMeter tests per runner
@@ -107,15 +125,14 @@ jobs:
     name: ${{ needs.set-test-name.outputs.final_test_name }} - Runner ${{ matrix.runner_index }}
     runs-on: ubuntu-latest
     needs: set-test-name
-
     strategy:
-      fail-fast: false  # Continue other runners even if one fails
+      fail-fast: false
       matrix:
-        runner_index: [1, 2, 3, 4]  # Parallel runner indices
+        runner_index: [1, 2, 3, 4]
 
     steps:
       # --------------------------------------
-      # Step: Checkout repo
+      # Step: Checkout repository
       # --------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4  # Get repo files
@@ -128,11 +145,11 @@ jobs:
         shell: bash
         run: |
           echo "===== Machine Info ====="
-          echo "CPU cores: $(nproc)"  # Number of CPU cores
-          echo "Memory: $(free -h)"   # RAM info
-          echo "IP: $(curl -s ifconfig.me)"  # Public IP
+          echo "CPU cores: $(nproc)"
+          echo "Memory: $(free -h)"
+          echo "IP: $(curl -s ifconfig.me)"
           echo "Location info:"
-          curl -s https://ipapi.co/json/  # Geolocation info
+          curl -s https://ipapi.co/json/
           echo "========================"
 
       # --------------------------------------
@@ -147,11 +164,11 @@ jobs:
       # --------------------------------------
       # Step: Early JMX validation
       # --------------------------------------
-      - name: Verify JMeter test plan exists (before install)
+      - name: Verify JMeter test plan exists
         shell: bash
         run: |
           if [ ! -f "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}" ]; then
-            echo "❌ Test plan '${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}' not found!"
+            echo "❌ Test plan not found: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}"
             exit 1
           fi
           echo "✅ Found JMX file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.test_plan_file }}"
@@ -167,11 +184,16 @@ jobs:
           wget -nv https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${{ env.JMETER_VERSION }}.zip
           unzip -q apache-jmeter-${{ env.JMETER_VERSION }}.zip
           JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
+
+          # Fix missing cmdrunner jar required by Plugins Manager
+          wget -nv https://jmeter-plugins.org/download/tools/cmdrunner/cmdrunner-2.3.jar -O $JMETER_HOME/lib/cmdrunner-2.3.jar
+
           export PATH=$PATH:$JMETER_HOME/bin
 
           # Install plugin manager
           wget -q https://jmeter-plugins.org/get/ -O $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar
           java -cp $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar org.jmeterplugins.repository.PluginManagerCMDInstaller
+
           # Install required plugins
           $JMETER_HOME/bin/PluginsManagerCMD.sh install jpgc-dummy,jpgc-casutg,jpgc-filterresults
           echo "✅ Installed JMeter ${JMETER_VERSION} with plugins"
@@ -180,7 +202,7 @@ jobs:
       # Step: Optional system monitoring
       # --------------------------------------
       - name: Start System Monitoring (optional)
-        if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        if: ${{ github.event.inputs.monitor_system == 'true' }}
         shell: bash
         run: |
           mkdir -p "${{ env.REPORT_DIR }}"
@@ -196,7 +218,7 @@ jobs:
             done
           }
           monitor &
-          echo $! > /tmp/monitor_pid.txt  # Save PID to stop later
+          echo $! > /tmp/monitor_pid.txt
 
       # --------------------------------------
       # Step: Run JMeter Test
@@ -207,13 +229,14 @@ jobs:
         run: |
           JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
           export PATH=$PATH:$JMETER_HOME/bin
+
           TEST_NAME="${{ needs.set-test-name.outputs.final_test_name }}"
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           RESULT_DIR="${{ env.REPORT_DIR }}/${TEST_NAME}-runner-${{ matrix.runner_index }}-$TIMESTAMP"
           mkdir -p "$RESULT_DIR"
 
-          RESULTS_JTL="$RESULT_DIR/results.jtl"  # Main JTL file
-          ERRORS_JTL="$RESULT_DIR/errors.jtl"   # Errors only
+          RESULTS_JTL="$RESULT_DIR/results.jtl"
+          ERRORS_JTL="$RESULT_DIR/errors.jtl"
 
           echo "🏃 Running JMeter test on Runner ${{ matrix.runner_index }}..."
           jmeter -n \
@@ -231,7 +254,7 @@ jobs:
       # Step: Stop monitoring
       # --------------------------------------
       - name: Stop System Monitoring (optional)
-        if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
+        if: ${{ github.event.inputs.monitor_system == 'true' }}
         shell: bash
         run: |
           if [ -f /tmp/monitor_pid.txt ]; then
@@ -266,22 +289,28 @@ jobs:
 # Job 3: Aggregate Results
 # =========================================================
   aggregate-reports:
-    if: ${{ github.event.inputs.test_type != 'cleanup' }}  # Skip cleanup runs
+    if: ${{ github.event.inputs.test_type != 'cleanup' }}
     needs: [set-test-name, run-jmeter]
     runs-on: ubuntu-latest
 
     steps:
+      # --------------------------------------
       # Checkout repo
+      # --------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Download runner artifacts
+      # --------------------------------------
+      # Download all runner artifacts
+      # --------------------------------------
       - name: Download all runner artifacts
         uses: actions/download-artifact@v4
         with:
           path: jmeter-results
 
-      # Extract all ZIPs into combined-results
+      # --------------------------------------
+      # Extract all runner ZIPs
+      # --------------------------------------
       - name: Extract all runner ZIPs
         shell: bash
         run: |
@@ -293,7 +322,9 @@ jobs:
             unzip -qo "$zipfile" -d combined-results/"$foldername"
           done
 
-      # Install Java + JMeter + plugins for aggregation
+      # --------------------------------------
+      # Install Java + JMeter + Plugins
+      # --------------------------------------
       - name: Install Java & JMeter with Plugins
         shell: bash
         run: |
@@ -303,42 +334,62 @@ jobs:
           unzip -q apache-jmeter-${{ env.JMETER_VERSION }}.zip
           JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
           export PATH=$PATH:$JMETER_HOME/bin
+          wget -nv https://jmeter-plugins.org/download/tools/cmdrunner/cmdrunner-2.3.jar -O $JMETER_HOME/lib/cmdrunner-2.3.jar
           wget -q https://jmeter-plugins.org/get/ -O $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar
           java -cp $JMETER_HOME/lib/ext/jmeter-plugins-manager.jar org.jmeterplugins.repository.PluginManagerCMDInstaller
           $JMETER_HOME/bin/PluginsManagerCMD.sh install jpgc-dummy,jpgc-casutg,jpgc-filterresults
 
-      # Merge all JTL files (including errors)
-      - name: Merge All JTL Files (including errors)
+      # --------------------------------------
+      # Merge all JTLs & generate consolidated HTML
+      # --------------------------------------
+      - name: Generate Consolidated Results
         shell: bash
         run: |
-          MERGED_DIR=merged-results
-          mkdir -p $MERGED_DIR
-          MERGED_JTL=$MERGED_DIR/merged-results.jtl
-          echo "🔄 Merging all JTL files..."
-          find combined-results -type f -name "*.jtl" -exec cat {} + > "$MERGED_JTL"
-          echo "✅ Merged JTL created at $MERGED_JTL"
+          mkdir -p consolidated
+          ALL_JTLS=$(find combined-results -type f -name "results.jtl" | tr '\n' ' ')
+          ALL_ERRORS=$(find combined-results -type f -name "errors.jtl" | tr '\n' ' ')
 
-      # Generate consolidated HTML report
-      - name: Generate Consolidated JMeter HTML Report
-        shell: bash
-        run: |
-          MERGED_DIR=merged-results
-          MERGED_JTL=$MERGED_DIR/merged-results.jtl
-          CONSOLIDATED_HTML=$MERGED_DIR/html-report
-          echo "📊 Generating consolidated HTML report..."
-          $JMETER_HOME/bin/jmeter -g "$MERGED_JTL" -o "$CONSOLIDATED_HTML" \
-            -Jjmeter.save.saveservice.autoflush=true
-          echo "✅ Consolidated HTML report generated at $CONSOLIDATED_HTML"
+          if [ -z "$ALL_JTLS" ]; then
+            echo "⚠️ No JTL files found, skipping consolidation"
+            exit 0
+          fi
 
-      # Package and upload consolidated artifacts
-      - name: Package and Upload Consolidated Artifacts
+          # Merge JTLs
+          MERGED_JTL="consolidated/all_results.jtl"
+          MERGED_ERRORS="consolidated/all_errors.jtl"
+          echo "Merging all runner results into $MERGED_JTL and $MERGED_ERRORS"
+          # Merge main JTLs
+          head -n 1 $(echo $ALL_JTLS | awk '{print $1}') > $MERGED_JTL
+          for file in $ALL_JTLS; do
+            tail -n +2 "$file" >> $MERGED_JTL
+          done
+          # Merge error JTLs
+          head -n 1 $(echo $ALL_ERRORS | awk '{print $1}') > $MERGED_ERRORS
+          for file in $ALL_ERRORS; do
+            tail -n +2 "$file" >> $MERGED_ERRORS
+          done
+
+          # Generate consolidated HTML
+          JMETER_HOME=$PWD/apache-jmeter-${{ env.JMETER_VERSION }}
+          jmeter -g $MERGED_JTL -o consolidated/html-report
+          echo "✅ Consolidated HTML report generated at consolidated/html-report"
+
+      # --------------------------------------
+      # Package consolidated results
+      # --------------------------------------
+      - name: Package Consolidated Artifacts
         if: always()
         shell: bash
         run: |
           mkdir -p final-upload
-          cp -r merged-results final-upload/
-          zip -r consolidated-results.zip final-upload/
-          echo "📦 Packaged consolidated-results.zip"
+          cp jmeter-results/**/*.zip final-upload/ || true
+          cp -r consolidated final-upload/consolidated || true
+          zip -r "consolidated-results.zip" final-upload/
+          echo "📦 Consolidated ZIP: consolidated-results.zip"
+
+      # --------------------------------------
+      # Upload consolidated artifact
+      # --------------------------------------
       - name: Upload Consolidated Artifact
         if: always()
         uses: actions/upload-artifact@v4
