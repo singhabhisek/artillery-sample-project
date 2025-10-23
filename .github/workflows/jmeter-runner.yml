@@ -90,27 +90,41 @@ jobs:
         run: |
           # Get current date fallback
           TIMESTAMP=$(date +%Y%m%d)
-
-          # Determine base name: run_name > test_name > fallback
+      
+          # Start with empty name
+          FINAL_NAME=""
+      
+          # Include test_name if provided
           if [ -n "${{ github.event.inputs.test_name }}" ]; then
-            BASE_NAME="Jmeter_Test_${{ github.event.inputs.test_name }}"
-          else
-            BASE_NAME="test_$TIMESTAMP"
+            FINAL_NAME="JMeter_Test_${{ github.event.inputs.test_name }}"
           fi
-
-          # Append optional run_name if provided
+      
+          # Include run_name if provided
           if [ -n "${{ github.event.inputs.run_name }}" ]; then
-            FINAL_NAME="${BASE_NAME}_run_${{ github.event.inputs.run_name }}"
-          else
-            FINAL_NAME="$BASE_NAME"
+            if [ -n "$FINAL_NAME" ]; then
+              FINAL_NAME="${FINAL_NAME}_Run_${{ github.event.inputs.run_name }}"
+            else
+              FINAL_NAME="Run_${{ github.event.inputs.run_name }}"
+            fi
           fi
-
+      
+          # If neither test_name nor run_name provided, fallback to date
+          if [ -z "$FINAL_NAME" ]; then
+            FINAL_NAME="Test_$TIMESTAMP"
+          fi
+      
+          # Append optional run_id if provided
+          if [ -n "${{ github.event.inputs.run_id }}" ]; then
+            FINAL_NAME="${FINAL_NAME}_ID_${{ github.event.inputs.run_id }}"
+          fi
+      
           # Sanitize name: replace all non-alphanumeric characters with underscore
           SAFE_NAME=$(echo "$FINAL_NAME" | sed 's/[^a-zA-Z0-9_-]/_/g')
-
-          # Export final sanitized name for downstream jobs
+      
+          # Export for downstream jobs
           echo "final_test_name=$SAFE_NAME" >> $GITHUB_OUTPUT
           echo "✅ Final sanitized test/run name: $SAFE_NAME"
+
 
 # =========================================================
 # Job 2: Run JMeter tests per runner
