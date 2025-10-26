@@ -1,0 +1,128 @@
+# =====================================================================
+# 🎯 Artillery Load Test for GCP Cloud Run Microservices
+# =====================================================================
+# Description:
+#   Runs a realistic load against Cloud Run endpoints:
+#     - GET /users/:id
+#     - POST /orders
+#     - POST /payments
+# Features:
+#   - Reads user/order data from CSV files
+#   - Uses GitHub Action environment vars & secrets
+#   - Plugins: ensure, artillery-plugin-endpoints
+#   - Logs errors (status != 200) into reports/logs/error_log.txt
+#   - Can be executed automatically from GitHub Actions
+# =====================================================================
+
+config:
+  # 🌍 Target base URL — injected by GitHub Action using ARTILLERY_TARGET
+  target: "{{ $processEnvironment.ARTILLERY_TARGET }}"
+  echo "▶️ Running Artillery test script: ${{ github.event.inputs.script_file }}"
+  echo "🌍 Target URL: ${{ vars.BASE_URL }}"
+
+  # 🕒 Phases define test duration & load pattern
+  phases:
+    - duration: 30          # 1 minute warm-up phase
+      arrivalRate: 5        # 3 new virtual users per second
+      name: "Warm-up"
+    - duration: 30         # 2 minutes steady load
+      arrivalRate: 5
+      name: "Steady Load"
+
+  # ⚙️ Processor script (Node.js) for custom hooks & error handling
+  processor: "./hooks.js"
+
+  # 🔌 Plugins to extend Artillery functionality
+  plugins:
+    ensure: {}                       # Add pass/fail checks
+    metrics-by-endpoint: {}   # Endpoint-level metrics summary
+
+  # ✅ Ensure thresholds (test fails if these not met)
+  ensure:
+    thresholds:
+      - http.response_time.p95 < 4000     # 95% of requests < 4s
+      - http.response_time.max < 10000    # None exceed 10s
+      - http.request_rate > 2             # At least 2 requests/sec
+      - http.codes.200.rate > 0.95        # 95% success rate required
+
+  # 🌐 Common headers for all requests
+  defaults:
+    headers:
+      Content-Type: "application/json"
+      X-Auth-Token: "{{ $processEnvironment.API_KEY }}"        # from GitHub Secret
+      Authorization: "{{ $processEnvironment.AUTH_HEADER }}"   # from GitHub Secret
+
+  # 📊 CSV-based payloads for dynamic data
+  payload:
+    # Each virtual user gets one unique record from users.csv
+    - path: "../data/users.csv"
+      fields:
+        - "userId"
+        - "firstName"
+        - "lastName"
+        - "email"
+      order: sequence
+
+    # Random order data (different per request)
+    - path: "../data/orders.csv"
+      fields:
+        - "productId"
+        - "quantity"
+        - "price"
+      order: random
+
+# =====================================================================
+# 💡 Scenario: Simulate a complete microservice transaction
+# =====================================================================
+scenarios:
+  - name: "Confirm Data Load and Use"
+    flow:
+      # Use the 'log' action to print the variable value to the console/report
+      - log: "Starting scenario for User ID: {{ userId }} (Name: {{ firstName }})"
+      
+  - name: "Random API"
+    flow:
+      # 🧍 Step 1: Fetch Random API details
+      - get:
+          url: "https://random-error-api-994656192388.us-central1.run.app"
+          
+  - name: "Reports API"
+    flow:
+      # 🧍 Step 1: Fetch Random API details
+      - get:
+          url: "https://reports-994656192388.us-central1.run.app/"
+          
+  - name: "GET user profile → create order → charge payment"
+    flow:
+      # 🧍 Step 1: Fetch user details
+      - get:
+          url: "https://users-994656192388.us-central1.run.app/users/{{ userId }}"
+          capture:
+            - json: "$.id"
+              as: "fetchedUserId"
+          afterResponse: "logIfError"
+
+      # 📦 Step 2: Create an order
+      - post:
+          url: "https://orders-994656192388.us-central1.run.app/orders"
+          json:
+            userId: "{{ fetchedUserId }}"
+            productId: "{{ productId }}"
+            quantity: "{{ quantity }}"
+            price: "{{ price }}"
+          expect:
+            - statusCode: 200
+          afterResponse: "logIfError"
+
+      # 💭 Simulate small user think time
+      - think: 2
+
+      # 💳 Step 3: Charge payment for the order
+      - post:
+          url: "https://payments-994656192388.us-central1.run.app/payments"
+          json:
+            userId: "{{ fetchedUserId }}"
+            total: "{{ price }}"
+          expect:
+            - statusCode: 200
+          afterResponse: "logIfError"

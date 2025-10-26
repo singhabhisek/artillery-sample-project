@@ -1,0 +1,5 @@
+config:
+  target: "https://example.com"
+  phases:
+    - duration: 60
+      arrivalRate: 5
