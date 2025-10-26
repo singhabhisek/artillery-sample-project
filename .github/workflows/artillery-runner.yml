@@ -1,15 +1,25 @@
 name: "Artillery Load Test (Multi-Runner)"
 
 # Dynamic run-name shown in GitHub Actions UI
-# Uses user-provided run_id if available, otherwise generates formatted descriptive name
+# Uses user-provided run_name if available, otherwise generates formatted descriptive name
 run-name: >
   Artillery Workflow: ${{ github.event.inputs.test_name }}
 
 on:
   workflow_dispatch:
     inputs:
+      # -----------------------------
+      # Select application for testing
+      # -----------------------------
+      app_name:
+        description: "Application to test (app1, app2, etc.)"
+        required: true
+        type: choice
+        options:
+          - app1
+          - app2
       test_type:
-        description: "Choose test type (e.g., load/cleanup)"
+        description: "Choose test type: load/cleanup"
         required: true
         type: choice
         options:
@@ -45,7 +55,7 @@ on:
           - "false"
         default: "false"
       cleanup_days:
-        description: "Delete reports older than X days (cleanup mode)"
+        description: "Delete reports/artifacts older than X days (cleanup mode)"
         required: false
         default: "7"
       print_machine_info:
@@ -56,29 +66,81 @@ on:
           - "true"
           - "false"
 
+# =========================================================
+# Environment Variables
+# =========================================================
 env:
   ARTILLERY_VERSION: "2.0.21"
-  SCRIPTS_DIR: "./scripts"
-  DATA_DIR: "./data"
-  REPORT_DIR: "./artillery-results"
+  # -----------------------------
+  # Updated to point to app-specific directories
+  # -----------------------------
+  SCRIPTS_DIR: "./applications/${{ github.event.inputs.app_name }}/scripts"
+  DATA_DIR: "./applications/${{ github.event.inputs.app_name }}/data"
+  REPORT_DIR: "./reports/${{ github.event.inputs.app_name }}"
+
+# =========================================================
+# Cleanup Job (Optional)
+# Deletes old reports and GitHub artifacts if test_type is cleanup
+# =========================================================
+jobs:
+  cleanup-artifacts:
+    if: ${{ github.event.inputs.test_type == 'cleanup' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write  # Needed to delete GitHub artifacts
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete old reports from local reports folder
+        shell: bash
+        run: |
+          REPORT_DIR="./reports/${{ github.event.inputs.app_name }}"
+          DAYS=${{ github.event.inputs.cleanup_days || 7 }}
+
+          echo "Deleting local reports older than $DAYS days from $REPORT_DIR"
+
+          find "$REPORT_DIR" -type f \( -name '*.json' -o -name '*.html' -o -name '*.zip' \) -mtime +$DAYS -print -delete
+
+          echo "Local report cleanup completed."
+
+      - name: Delete old GitHub Actions artifacts
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DAYS=${{ github.event.inputs.cleanup_days || 7 }}
+          echo "Deleting GitHub Actions artifacts older than $DAYS days"
+
+          # Get list of artifacts via GitHub API
+          ARTIFACTS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?per_page=100" | jq -r '.artifacts[] | "\(.id) \(.created_at)"')
+
+          NOW=$(date +%s)
+
+          while read -r ID CREATED_AT; do
+            ART_TS=$(date -d "$CREATED_AT" +%s)
+            AGE=$(( (NOW - ART_TS) / 86400 ))
+            if [ "$AGE" -gt "$DAYS" ]; then
+              echo "Deleting artifact ID: $ID (created $CREATED_AT, $AGE days old)"
+              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ID"
+            fi
+          done <<< "$ARTIFACTS"
+
+          echo "GitHub artifact cleanup completed."
 
 # =========================================================
 # Pre-step job to calculate the final test name
 # =========================================================
-jobs:
   set-test-name:
     runs-on: ubuntu-latest
     outputs:
       final_test_name: ${{ steps.determine.outputs.final_test_name }}
-
+    needs: cleanup-artifacts  # Ensure cleanup runs first if selected
     steps:
-      # -------------------------------
-      # Determine final test name based on user input
-      # Priority:
-      # 1. run_name input
-      # 2. test_name input
-      # 3. fallback to "test-YYYYMMDD"
-      # -------------------------------
       - id: determine
         run: |
           TIMESTAMP=$(date +%Y%m%d)
@@ -95,30 +157,20 @@ jobs:
 # Main Artillery Runner Job
 # =========================================================
   run-artillery:
-    # -------------------------------
-    # Use the pre-calculated test name in job display
-    # Appends runner index to differentiate parallel jobs
-    # -------------------------------
     name: ${{ needs.set-test-name.outputs.final_test_name }} - Runner ${{ matrix.runner_index }}
     runs-on: ubuntu-latest
-
+    needs: set-test-name
     strategy:
-      fail-fast: false  # Continue all runners even if one fails
+      fail-fast: false
       matrix:
         runner_index: [1, 2, 3, 4]
 
     steps:
-      # -------------------------------
-      # Checkout repository code
-      # -------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # -------------------------------
-      # Optional: Print machine info
-      # -------------------------------
       - name: Print machine details
         if: ${{ github.event.inputs.print_machine_info == 'true' }}
         shell: bash
@@ -131,36 +183,24 @@ jobs:
           curl -s https://ipapi.co/json/
           echo "========================"
 
-      # -------------------------------
-      # Skip runners not selected by user
-      # -------------------------------
       - name: Skip unused runner jobs
         if: ${{ matrix.runner_index > fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           echo "Skipping runner ${{ matrix.runner_index }} (not selected)"
           exit 0
 
-      # -------------------------------
-      # Setup Python environment
-      # -------------------------------
       - name: Setup Python
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.13.1"
 
-      # -------------------------------
-      # Install Python dependencies
-      # -------------------------------
       - name: Install Python Dependencies
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
           python -m pip install --upgrade pip
           pip install pandas plotly numpy pyyaml
 
-      # -------------------------------
-      # Ensure scenario YAML exists
-      # -------------------------------
       - name: Check scenario YAML exists
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -172,18 +212,12 @@ jobs:
             echo "Found scenario file: ${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}"
           fi
 
-      # -------------------------------
-      # Setup Node.js environment
-      # -------------------------------
       - name: Setup Node.js
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # -------------------------------
-      # Install Artillery and plugin
-      # -------------------------------
       - name: Install Artillery + Plugin
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         run: |
@@ -192,9 +226,6 @@ jobs:
           npm install @faker-js/faker
           artillery --version
 
-      # -------------------------------
-      # Optional System Monitoring
-      # -------------------------------
       - name: Start system monitoring (optional)
         if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -202,7 +233,6 @@ jobs:
           mkdir -p "${{ env.REPORT_DIR }}"
           LOG_FILE="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-system.log"
           echo "timestamp,cpu_user,cpu_system,cpu_idle,mem_used,mem_free" > $LOG_FILE
-
           monitor() {
             while true; do
               ts=$(date +"%Y-%m-%d %H:%M:%S")
@@ -212,27 +242,19 @@ jobs:
               sleep 180
             done
           }
-
           monitor &
           echo $! > /tmp/monitor_pid.txt
           echo "System monitoring started in background, logging every 5 minutes."
 
-      # -------------------------------
-      # Run Artillery test
-      # -------------------------------
       - name: Run Artillery Test
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         id: run_test
         shell: bash
         run: |
           mkdir -p "${{ env.REPORT_DIR }}"
-
           TIMESTAMP=$(date +%Y%m%d)
           RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
-
-          # Use the pre-calculated test name from the set-test-name job
           TEST_NAME="${{ needs.set-test-name.outputs.final_test_name }}"
-
           RESULT_JSON="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}.json"
           RESULT_HTML="${TEST_NAME}-runner-${{ matrix.runner_index }}-${RANDOM_SUFFIX}-full.html"
 
@@ -249,9 +271,6 @@ jobs:
           echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT
           echo "result_html=$RESULT_HTML" >> $GITHUB_OUTPUT
 
-      # -------------------------------
-      # Stop system monitoring (optional)
-      # -------------------------------
       - name: Stop system monitoring (optional)
         if: ${{ github.event.inputs.monitor_system == 'true' && matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
         shell: bash
@@ -262,9 +281,6 @@ jobs:
             echo "System monitoring stopped."
           fi
 
-      # -------------------------------
-      # Upload system monitoring logs (optional)
-      # -------------------------------
       - name: Upload system monitoring logs (optional)
         if: ${{ github.event.inputs.monitor_system == 'true' }}
         uses: actions/upload-artifact@v4
@@ -272,12 +288,9 @@ jobs:
           name: runner-${{ matrix.runner_index }}-system-logs
           path: ${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-system.log
 
-      # -------------------------------
-      # Generate Python dashboard for this runner
-      # -------------------------------
       - name: Generate Python dashboard for this runner
         if: ${{ matrix.runner_index <= fromJSON(github.event.inputs.runners_to_use) }}
-        continue-on-error: true   # <-- Continue workflow even if Python dashboard fails
+        continue-on-error: true
         shell: bash
         run: |
           RUNNER_HTML="${{ env.REPORT_DIR }}/runner-${{ matrix.runner_index }}-dashboard.html"
@@ -288,11 +301,8 @@ jobs:
             --output "$RUNNER_HTML" || echo "⚠️ Python script failed, continuing workflow"
           echo "Generated Python dashboard (if successful): $RUNNER_HTML"
 
-      # -------------------------------
-      # Package Artillery results into ZIP
-      # -------------------------------
       - name: Package Artillery results into ZIP
-        if: always()   # <-- Always run to ensure partial results are captured
+        if: always()
         shell: bash
         run: |
           ZIP_NAME="runner-${{ matrix.runner_index }}-results.zip"
@@ -301,11 +311,8 @@ jobs:
           zip -r "upload/$ZIP_NAME" "${{ env.REPORT_DIR }}" || echo "⚠️ ZIP packaging encountered a warning"
           echo "Packaged runner ZIP: upload/$ZIP_NAME"
 
-      # -------------------------------
-      # Upload runner artifact
-      # -------------------------------
       - name: Upload runner artifact
-        if: always()   # <-- Ensure upload happens even if previous steps failed
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: artillery-results-runner-${{ matrix.runner_index }}
@@ -313,34 +320,25 @@ jobs:
         continue-on-error: true
 
 # =========================================================
-# Aggregate reports (always run, even if some runners fail)
+# Aggregate reports (always run)
 # =========================================================
   aggregate-reports:
-    if: always()   # <-- Ensures aggregation runs regardless of errors/cancellations
+    if: always()
     needs: [set-test-name, run-artillery]
     runs-on: ubuntu-latest
 
     steps:
-      # -------------------------------
-      # Checkout repository
-      # -------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # -------------------------------
-      # Download all runner artifacts
-      # -------------------------------
       - name: Download all runner artifacts
         uses: actions/download-artifact@v4
         with:
           path: artillery-results
-        continue-on-error: true   # <-- Continue even if some artifacts are missing
+        continue-on-error: true
 
-      # -------------------------------
-      # Extract all runner ZIPs
-      # -------------------------------
       - name: Extract all runner ZIPs
         shell: bash
         run: |
@@ -352,9 +350,6 @@ jobs:
             unzip -o "$zipfile" -d combined-results/"$foldername"
           done
 
-      # -------------------------------
-      # Determine test name for consolidated files
-      # -------------------------------
       - name: Determine test name for consolidated files
         id: test_name
         shell: bash
@@ -366,9 +361,6 @@ jobs:
           fi
           echo "consolidated_test_name=$CONSOLIDATED_NAME" >> $GITHUB_OUTPUT
 
-      # -------------------------------
-      # Collect all JSON filenames
-      # -------------------------------
       - name: Collect all JSON filenames
         id: collect_jsons
         shell: bash
@@ -381,9 +373,6 @@ jobs:
           fi
           echo "json_files=$JSON_FILES" >> $GITHUB_OUTPUT
 
-      # -------------------------------
-      # Setup Python for consolidation
-      # -------------------------------
       - name: Setup Python
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         uses: actions/setup-python@v5
@@ -396,13 +385,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas pyyaml plotly numpy
 
-      # -------------------------------
-      # Generate consolidated Python dashboard
-      # -------------------------------
       - name: Generate consolidated Python dashboard
         if: ${{ steps.collect_jsons.outputs.json_files != '' }}
         shell: bash
-        continue-on-error: true  # <-- Continue even if Python script fails
+        continue-on-error: true
         run: |
           FINAL_HTML="${{ steps.test_name.outputs.consolidated_test_name }}-consolidated-dashboard.html"
           python "${GITHUB_WORKSPACE}/generate_artillery_dashboard.py" \
@@ -410,9 +396,6 @@ jobs:
             --yaml "${{ env.SCRIPTS_DIR }}/${{ github.event.inputs.scenario_file }}" \
             --output "$FINAL_HTML" || echo "⚠️ Python consolidation failed, continuing."
 
-      # -------------------------------
-      # Package consolidated artifacts
-      # -------------------------------
       - name: Package consolidated artifacts
         if: always()
         shell: bash
@@ -423,9 +406,6 @@ jobs:
           zip -r "consolidated-results.zip" final-upload/
           echo "Packaged all results into consolidated-results.zip"
 
-      # -------------------------------
-      # Upload consolidated artifacts
-      # -------------------------------
       - name: Upload consolidated artifacts
         if: always()
         uses: actions/upload-artifact@v4
